@@ -52,8 +52,7 @@ def istasyonlar(il: str):
 def guncel(il: str):
     ilce = request.args.get("ilce")
     try:
-        istasyon = mgm.ilce_istasyonu(il, ilce)
-        istasyon_id = istasyon.get("istasyonId") or istasyon.get("merkezId")
+        istasyon_id = _istasyon_id_getir(il, ilce)
         veri = mgm.guncel_durum(istasyon_id)
         return jsonify({"basarili": True, "veri": veri})
     except MGMWeatherError as exc:
@@ -64,8 +63,7 @@ def guncel(il: str):
 def tahmin(il: str):
     ilce = request.args.get("ilce")
     try:
-        istasyon = mgm.ilce_istasyonu(il, ilce)
-        istasyon_id = istasyon.get("istasyonId") or istasyon.get("merkezId")
+        istasyon_id = _istasyon_id_getir(il, ilce)
         veri = mgm.gunluk_tahmin(istasyon_id)
         return jsonify({"basarili": True, "veri": veri})
     except MGMWeatherError as exc:
