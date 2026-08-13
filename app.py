@@ -40,6 +40,14 @@ def _hata_yanit(exc: Exception, kod: int = 502):
     return jsonify({"basarili": False, "hata": str(exc)}), kod
 
 
+def _istasyon_id_getir(il: str, ilce: str | None) -> int | str:
+    istasyon = mgm.ilce_istasyonu(il, ilce)
+    istasyon_id = istasyon.get("istasyonId") or istasyon.get("merkezId")
+    if istasyon_id is None:
+        raise MGMWeatherError(f"'{il}' için geçerli istasyon kimliği bulunamadı.")
+    return istasyon_id
+
+
 @app.get("/istasyonlar/<il>")
 def istasyonlar(il: str):
     try:
