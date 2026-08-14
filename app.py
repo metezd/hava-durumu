@@ -43,6 +43,8 @@ mgm = MGMWeather(
     retry_backoff=float(os.getenv("MGM_RETRY_BACKOFF", "0.3")),
     cache_ttl_seconds=int(os.getenv("MGM_CACHE_TTL", "60")),
     cache_max_entries=int(os.getenv("MGM_CACHE_MAX_ENTRIES", "512")),
+    redis_url=os.getenv("MGM_REDIS_URL") or None,
+    redis_prefix=os.getenv("MGM_REDIS_PREFIX", "mgm-cache:"),
 )
 CORS_ALLOW_ORIGIN = os.getenv("APP_CORS_ALLOW_ORIGIN", "*")
 RATE_LIMIT_WINDOW = int(os.getenv("APP_RATE_LIMIT_WINDOW_SECONDS", "60"))

@@ -82,9 +82,14 @@ class MGMWeather:
     retry_backoff: float = 0.3
     cache_ttl_seconds: int = 60
     cache_max_entries: int = 512
+    redis_url: str | None = None
+    redis_prefix: str = "mgm-cache:"
+    redis_client: Any | None = None
     session: requests.Session = field(default_factory=requests.Session)
     _cache: dict[str, tuple[float, Any]] = field(default_factory=dict, init=False)
     _cache_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _redis_available: bool = field(default=False, init=False)
+    _redis_error_cls: type[BaseException] | None = field(default=None, init=False)
 
     BASE_URL = "https://servis.mgm.gov.tr/web"
     SUNRISE_URL = "https://api.sunrise-sunset.org/json"
@@ -115,9 +120,33 @@ class MGMWeather:
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
 
+        if self.redis_client is not None:
+            self._redis_available = True
+            return
+
+        if self.redis_url:
+            try:
+                import redis
+            except ImportError as exc:
+                raise MGMWeatherError(
+                    "Redis cache icin 'redis' paketi kurulu degil. "
+                    "`pip install -r requirements.txt` calistirin."
+                ) from exc
+            try:
+                self.redis_client = redis.Redis.from_url(self.redis_url, decode_responses=True)
+                self.redis_client.ping()
+            except redis.RedisError as exc:
+                raise MGMWeatherError(f"Redis baglantisi kurulamadi: {exc}") from exc
+            self._redis_error_cls = redis.RedisError
+            self._redis_available = True
+
     # Düşük seviye yardımcılar
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         cache_key = self._cache_key(path, params)
+        redis_cached = self._redis_get(cache_key)
+        if redis_cached is not None:
+            return redis_cached
+
         cached = self._cache_get(cache_key)
         if cached is not None:
             return cached
@@ -142,6 +171,7 @@ class MGMWeather:
                 f"MGM servisinden geçerli JSON alınamadı ({url})"
             ) from exc
         self._cache_set(cache_key, data)
+        self._redis_set(cache_key, data)
         return data
 
     def _cache_key(self, path: str, params: dict[str, Any] | None = None) -> str:
@@ -171,6 +201,47 @@ class MGMWeather:
                 oldest_key = min(self._cache.items(), key=lambda item: item[1][0])[0]
                 del self._cache[oldest_key]
             self._cache[key] = (expires_at, copy.deepcopy(payload))
+
+    def _redis_key(self, key: str) -> str:
+        return f"{self.redis_prefix}{key}"
+
+    def _redis_get(self, key: str) -> Any | None:
+        if not self._redis_available or self.cache_ttl_seconds <= 0:
+            return None
+        assert self.redis_client is not None
+
+        if self._redis_error_cls is not None:
+            try:
+                value = self.redis_client.get(self._redis_key(key))
+            except self._redis_error_cls as exc:
+                raise MGMWeatherError(f"Redis cache okuma hatasi: {exc}") from exc
+        else:
+            value = self.redis_client.get(self._redis_key(key))
+
+        if value is None:
+            return None
+        if isinstance(value, (bytes, bytearray)):
+            value = value.decode("utf-8")
+        if not isinstance(value, str):
+            raise MGMWeatherError("Redis cache verisi beklenen formatta degil.")
+        try:
+            return json.loads(value)
+        except ValueError as exc:
+            raise MGMWeatherError(f"Redis cache verisi cozumlenemedi: {exc}") from exc
+
+    def _redis_set(self, key: str, payload: Any) -> None:
+        if not self._redis_available or self.cache_ttl_seconds <= 0:
+            return
+        assert self.redis_client is not None
+        serialized = json.dumps(payload, ensure_ascii=False)
+
+        if self._redis_error_cls is not None:
+            try:
+                self.redis_client.setex(self._redis_key(key), self.cache_ttl_seconds, serialized)
+            except self._redis_error_cls as exc:
+                raise MGMWeatherError(f"Redis cache yazma hatasi: {exc}") from exc
+        else:
+            self.redis_client.setex(self._redis_key(key), self.cache_ttl_seconds, serialized)
 
     def il_istasyonlari(self, il: str) -> list[dict[str, Any]]:
         """
