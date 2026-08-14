@@ -1,6 +1,13 @@
-<h1 align="center">
-  <span style="font-weight: 600;">Hava durumu</span>
-</h1>
+<h1 align="center">MGM Unofficial Weather API</h1>
+
+<p align="center">
+  <a href="https://github.com/metezd/mgm-api/actions/workflows/test.yml">
+    <img src="https://github.com/metezd/mgm-api/actions/workflows/main.yml/badge.svg" alt="CI Status" />
+  </a>
+  <img src="https://img.shields.io/badge/python-3.13-blue.svg" alt="Python 3.13" />
+  <img src="https://img.shields.io/badge/redis-enabled-red.svg" alt="Redis" />
+  <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License" />
+</p>
 
 <p align="center">
   Karakter sorunu yaşanırsa il/ilçe adını Türkçe karakter kullanmadan yazın (<code>Istanbul</code>, <code>Bakirkoy</code>).
@@ -24,8 +31,6 @@ Geliştirici sunucusuyla (Flask debug) çalıştırmak için:
 $env:APP_SERVER="flask"; $env:FLASK_DEBUG="1"; python app.py
 ```
 
-Not: Flask'ın kendi sunucusu geliştirme içindir; production kullanımında `waitress` (varsayılan) tercih edilir.
-
 ## Docker ile çalıştırma
 
 ```bash
@@ -33,7 +38,7 @@ cp .env.example .env   # değerler düzenlenebilir, boşsa varsayılanlar geçer
 docker compose up --build
 ```
 
-Bu komut `redis:7-alpine` konteynerini ve uygulamayı ayağa kaldırır; `MGM_REDIS_URL` otomatik olarak bundled Redis'e (`redis://redis:6379/0`) işaret eder `.env` yoksa da çalışır ve tüm ayarlar `docker-compose.yml`'dekilerle devam eder.
+Bu komut `redis:7-alpine` konteynerini ve uygulamayı ayağa kaldırır `MGM_REDIS_URL` otomatik olarak bundled Redis'e (`redis://redis:6379/0`) işaret eder `.env` yoksa da çalışır ve tüm ayarlar `docker-compose.yml`'dekilerle devam eder.
 
 Sadece uygulamayı çalıştırmak için:
 
@@ -66,7 +71,7 @@ Uygulama yanında opsiyonel bir Redis veya [Redis Stack](https://redis.io/docs/l
 MGM_REDIS_URL="redis://localhost:6379/0" python app.py
 ```
 
-Redis'e bağlanılamazsa uygulama hata verip durur; uygulamayı Redis olmadan kullanmak istiyorsanız değişkeni set etmeyin, bu durumda in-memory cache devreye girer. (`docker compose up` kullanıyorsanız bu adımlarla uğraşmanıza gerek yok, Redis servisi ve `MGM_REDIS_URL` otomatik ayarlanır, bkz. Docker ile çalıştırma)
+Redis'e bağlanılamazsa uygulama hata verip durur. Eğer uygulamayı Redis olmadan kullanmak istiyorsanız değişkeni set etmeyin, bu durumda in-memory cache devreye girer. (`docker compose up` kullanıyorsanız bu adımlarla uğraşmanıza gerek yok, Redis servisi ve `MGM_REDIS_URL` otomatik ayarlanır, bkz. Docker ile çalıştırma)
 
 MGM isteklerinde timeout/retry/cache ayarları ortam değişkeniyle yönetilir:
 
@@ -79,7 +84,7 @@ MGM isteklerinde timeout/retry/cache ayarları ortam değişkeniyle yönetilir:
 - `MGM_REDIS_URL` (varsayılan: yok — Redis kapalı)
 - `MGM_REDIS_PREFIX` (varsayılan: `mgm-cache:`)
 
-Redis cache'te **socket timeout (2 sn)** ve **connect timeout (2 sn)** zorunlu olarak uygulanır; bu sayede Redis'in yavaşlaması veya çökmesi istek akışını uzun süre bloklamaz. Gün doğumu/batımı verisi de aynı cache altyapısından geçer.
+Redis cache'te **socket timeout (2 sn)** ve **connect timeout (2 sn)** zorunlu olarak uygulanır ve bu sayede Redis'in yavaşlaması veya çökmesi istek akışını uzun süre bloklamaz. Gün doğumu/batımı verisi de aynı cache altyapısından geçer.
 
 ### Stale-while-revalidate (SWR) ve cache stampede koruması
 
@@ -95,7 +100,7 @@ Aynı anahtar için eşzamanlı isteklerde yalnızca biri yenilemeyi yapar (işl
 
 MGM art arda hata verdiğinde (30 sn içinde 5 hata) devre açılır: bunu izleyen süre boyunca (60 sn) MGM'ye hiç istek atılmaz, doğrudan hata dönülür. Süre dolunca devre yarı açık olur bu tek bir deneme isteği yapılır başarılıysa devre kapanır, başarısızsa tekrar açılır.
 
-Önemli: circuit breaker yalnızca asıl ağ isteğini keser, cache/SWR katmanının önüne geçmez. Yani MGM kesintisi sırasında elinizde stale (TTL'i geçmiş ama SWR penceresi içindeki) veri varsa kullanıcı bunu almaya devam eder; breaker sadece arka planda MGM'yi gereksiz yere zorlayan/bekleten istekleri atlar. Cache'te hiç veri yoksa devre açıkken istek anında hatayla döner retry, backoff süresi boyunca beklemez.
+Önemli: circuit breaker yalnızca asıl ağ isteğini keser, cache/SWR katmanının önüne geçmez. Yani MGM kesintisi sırasında elinizde stale (TTL'i geçmiş ama SWR penceresi içindeki) veri varsa kullanıcı bunu almaya devam eder, breaker sadece arka planda MGM'yi gereksiz yere zorlayan/bekleten istekleri atlar. Cache'te hiç veri yoksa devre açıkken istek anında hatayla döner retry, backoff süresi boyunca beklemez.
 
 - `MGM_CIRCUIT_BREAKER_FAILURE_THRESHOLD` (varsayılan: `5`)
 - `MGM_CIRCUIT_BREAKER_WINDOW_SECONDS` (varsayılan: `30`)
