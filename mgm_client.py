@@ -44,6 +44,19 @@ _CACHED_AT_KEY = "_cachedAt"
 _VALUE_KEY = "_value"
 
 
+@dataclass
+class _InFlight:
+    """Cache miss'te aynı anahtarı aynı anda tek isteğin yüklemesini sağlar.
+
+    Lider istek loader'ı çalıştırır, sonucu/hastayı kaydeder ve event'i set
+    eder bekleyenler event'i izleyip aynı sonucu kullanır.
+    """
+
+    event: threading.Event = field(default_factory=threading.Event)
+    sonuc: Any = None
+    hata: BaseException | None = None
+
+
 class MGMWeatherError(Exception):
     """MGM istemcisiyle ilgili tüm hatalar için temel sınıf."""
 
@@ -108,6 +121,8 @@ class MGMWeather:
     _redis_error_cls: type[BaseException] | None = field(default=None, init=False)
     _renewing: set[str] = field(default_factory=set, init=False)
     _renew_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _in_flight: dict[str, _InFlight] = field(default_factory=dict, init=False)
+    _in_flight_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _lock_ttl: float = field(default=0.0, init=False)
 
     BASE_URL = "https://servis.mgm.gov.tr/web"
@@ -196,10 +211,7 @@ class MGMWeather:
                 return payload
 
         logger.info("Cache miss: %s", key)
-        payload = loader()
-        self._cache_set(key, payload)
-        self._redis_set(key, payload)
-        return payload
+        return self._yukle_singleton(key, loader)
 
     def _swr_aktif(self) -> bool:
         return self.stale_while_revalidate_seconds > 0
@@ -214,6 +226,50 @@ class MGMWeather:
         if redis_kayit is not None:
             return redis_kayit
         return self._cache_get(key)
+
+    def _yukle_singleton(self, key: str, loader: Callable[[], Any]) -> Any:
+        """Cache miss'te aynı anahtar için tek yükleme garantisi (single-flight).
+
+        Ilk istek lider olur ve loader'ı çalıştırıp eşzamanlı istekler aynı
+        _InFlight kaydında bekleyip sonucu paylaşır. Hata durumunda hata da
+        paylaşılır; kayıtlar her sonuçta temizlenir.
+        """
+        with self._in_flight_lock:
+            kayit = self._in_flight.get(key)
+            if kayit is None:
+                kayit = _InFlight()
+                self._in_flight[key] = kayit
+                lider = True
+            else:
+                lider = False
+
+        if lider:
+            try:
+                sonuc = loader()
+                self._cache_set(key, sonuc)
+                self._redis_set(key, sonuc)
+            except BaseException as exc:  # noqa: BLE001 - bekleyenlere her hata paylaşılır
+                kayit.hata = exc
+                kayit.event.set()
+                with self._in_flight_lock:
+                    self._in_flight.pop(key, None)
+                raise
+            kayit.sonuc = sonuc
+            kayit.event.set()
+            with self._in_flight_lock:
+                self._in_flight.pop(key, None)
+            return sonuc
+
+        logger.info("Cache miss'te lider istek bekleniyor: %s", key)
+        self._in_flight_sonucu_bekle(kayit)
+        assert kayit.hata is None, "Bekleyen istek hata almadan dönmemeli"
+        return copy.deepcopy(kayit.sonuc)
+
+    def _in_flight_sonucu_bekle(self, kayit: _InFlight) -> None:
+        """Lider isteğin tamamlanmasını bekler; hata girerse yeniden fırlatır."""
+        kayit.event.wait()
+        if kayit.hata is not None:
+            raise kayit.hata
 
     def _renew_try_lock(self, key: str) -> bool:
         """Aynı anahtarı aynı anda tek yenileyenin yüklemesini sağlar.
@@ -399,6 +455,20 @@ class MGMWeather:
             ),
             "Redis cache yazma hatası",
         )
+
+    def redis_saglik_ozeti(self) -> dict[str, str]:
+        """Redis sağlık özeti: durum ok|hata|skip ve varsa hata mesajı."""
+        if not self._redis_available:
+            return {"durum": "skip"}
+        try:
+            assert self.redis_client is not None
+            self._redis_islem(
+                lambda: self.redis_client.ping(),
+                "Redis sağlık kontrolü hatası",
+            )
+            return {"durum": "ok"}
+        except MGMWeatherError as exc:
+            return {"durum": "hata", "hata": str(exc)}
 
     def il_istasyonlari(self, il: str) -> list[dict[str, Any]]:
         """

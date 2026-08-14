@@ -5,13 +5,21 @@ from mgm_client import MGMWeatherError
 
 
 class FakeMGM:
-    def __init__(self, should_fail_health: bool = False):
+    def __init__(
+        self,
+        should_fail_health: bool = False,
+        redis_durum: dict[str, str] | None = None,
+    ):
         self.should_fail_health = should_fail_health
+        self.redis_durum = redis_durum if redis_durum is not None else {"durum": "skip"}
 
     def il_istasyonlari(self, il: str):
         if self.should_fail_health:
             raise MGMWeatherError("MGM servisine bağlanılamadı")
         return [{"il": il, "ilce": "Bakırköy", "merkezId": 93401}]
+
+    def redis_saglik_ozeti(self):
+        return dict(self.redis_durum)
 
     def ilce_istasyonu(self, il: str, ilce: str | None = None):
         return {"il": il, "ilce": ilce or "Bakırköy", "merkezId": 93401}
@@ -43,6 +51,7 @@ class TestAppIntegration(unittest.TestCase):
         data = resp.get_json()
         self.assertTrue(data["basarili"])
         self.assertEqual(data["mgm"], "skip")
+        self.assertEqual(data["redis"], "skip")
 
     def test_health_deep_ok(self):
         resp = self.client.get("/health?deep=1")
@@ -50,6 +59,23 @@ class TestAppIntegration(unittest.TestCase):
         data = resp.get_json()
         self.assertTrue(data["basarili"])
         self.assertEqual(data["mgm"], "ok")
+
+    def test_health_deep_ok_redis_ok(self):
+        app_module.mgm = FakeMGM(redis_durum={"durum": "ok"})
+        resp = self.client.get("/health?deep=1")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data["basarili"])
+        self.assertEqual(data["redis"], "ok")
+
+    def test_health_deep_redis_hata_503(self):
+        app_module.mgm = FakeMGM(redis_durum={"durum": "hata", "hata": "Down"})
+        resp = self.client.get("/health?deep=1")
+        self.assertEqual(resp.status_code, 503)
+        data = resp.get_json()
+        self.assertFalse(data["basarili"])
+        self.assertEqual(data["durum"], "degraded")
+        self.assertEqual(data["redis"], "hata")
 
     def test_health_deep_fail_503(self):
         app_module.mgm = FakeMGM(should_fail_health=True)

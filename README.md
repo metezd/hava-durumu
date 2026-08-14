@@ -28,7 +28,7 @@ Not: Flask'ın kendi sunucusu geliştirme içindir; production kullanımında `w
 
 | Uç noktalar | Açıklama |
 |---|---|
-| `GET /health` | Servis durumu (`?deep=1` ile MGM bağlantısı da kontrol edilir) |
+| `GET /health` | Servis durumu (`?deep=1` ile MGM + Redis bağlantısı da kontrol edilir) |
 | `GET /istasyonlar/<il>` | O ildeki istasyonları (ilçeleri) listeler |
 | `GET /guncel/<il>?ilce=<ilce>` | Anlık hava durumu |
 | `GET /tahmin/<il>?ilce=<ilce>` | 5 günlük tahmin |
@@ -62,7 +62,7 @@ MGM isteklerinde timeout/retry/cache ayarları ortam değişkeniyle yönetilir:
 
 Redis cache'te **socket timeout (2 sn)** ve **connect timeout (2 sn)** zorunlu olarak uygulanır; bu sayede Redis'in yavaşlaması veya çökmesi istek akışını uzun süre bloklamaz. Gün doğumu/batımı verisi de aynı cache altyapısından geçer.
 
-### Stale-while-revalidate (SWR)
+### Stale-while-revalidate (SWR) ve cache stampede koruması
 
 Cache kayıtları iki aşamalı yaşlanır:
 

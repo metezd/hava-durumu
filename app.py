@@ -117,10 +117,43 @@ def istasyonlar(il: str):
 def health():
     deep = request.args.get("deep", "").strip().lower() in {"1", "true", "yes", "on"}
     if not deep:
-        return jsonify({"basarili": True, "durum": "ok", "servis": "hava-durumu", "mgm": "skip"})
+        return jsonify(
+            {
+                "basarili": True,
+                "durum": "ok",
+                "servis": "hava-durumu",
+                "mgm": "skip",
+                "redis": "skip",
+            }
+        )
+
+    redis_durum = mgm.redis_saglik_ozeti()
+    if redis_durum["durum"] == "hata":
+        return (
+            jsonify(
+                {
+                    "basarili": False,
+                    "durum": "degraded",
+                    "servis": "hava-durumu",
+                    "mgm": "skip",
+                    "redis": "hata",
+                    "hata": redis_durum["hata"],
+                }
+            ),
+            503,
+        )
+
     try:
         mgm.il_istasyonlari("Ankara")
-        return jsonify({"basarili": True, "durum": "ok", "servis": "hava-durumu", "mgm": "ok"})
+        return jsonify(
+            {
+                "basarili": True,
+                "durum": "ok",
+                "servis": "hava-durumu",
+                "mgm": "ok",
+                "redis": redis_durum["durum"],
+            }
+        )
     except MGMWeatherError as exc:
         return (
             jsonify(
@@ -129,6 +162,7 @@ def health():
                     "durum": "degraded",
                     "servis": "hava-durumu",
                     "mgm": "hata",
+                    "redis": redis_durum["durum"],
                     "hata": str(exc),
                 }
             ),

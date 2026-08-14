@@ -1,3 +1,4 @@
+import threading
 import time
 import unittest
 
@@ -200,6 +201,42 @@ class TestStaleWhileRevalidate(unittest.TestCase):
         ucuncu = client._renew_try_lock(key)
         self.assertTrue(ucuncu)
         client._renew_release(key)
+
+    def test_single_flight_es_zamanli_yuklemede_tek_istek(self):
+        client = MGMWeather(cache_ttl_seconds=60)
+        yukleme_sayisi = 0
+        kilit = threading.Lock()
+
+        def yavas_loader():
+            nonlocal yukleme_sayisi
+            with kilit:
+                yukleme_sayisi += 1
+            time.sleep(0.2)
+            return [{"deger": yukleme_sayisi}]
+
+        sonuclar = []
+        hatalar = []
+
+        def istek_atan():
+            try:
+                sonuclar.append(client._yukle_singleton("single-key", yavas_loader))
+            except Exception as exc:  # noqa: BLE001
+                hatalar.append(exc)
+
+        ipler = [threading.Thread(target=istek_atan) for _ in range(5)]
+        for ip in ipler:
+            ip.start()
+        for ip in ipler:
+            ip.join()
+
+        self.assertEqual(hatalar, [])
+        self.assertEqual(yukleme_sayisi, 1)
+        self.assertEqual(len(sonuclar), 5)
+        self.assertTrue(all(s == sonuclar[0] for s in sonuclar))
+
+    def test_redis_saglik_ozeti_redis_kapaliyken_skip(self):
+        client = MGMWeather()
+        self.assertEqual(client.redis_saglik_ozeti(), {"durum": "skip"})
 
 
 if __name__ == "__main__":
