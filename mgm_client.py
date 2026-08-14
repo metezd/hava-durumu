@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 class MGMWeatherError(Exception):
@@ -72,6 +74,8 @@ class MGMWeather:
     """servis.mgm.gov.tr uç noktalarına istek atan basit istemci."""
 
     timeout: int = 10
+    retry_total: int = 3
+    retry_backoff: float = 0.3
     session: requests.Session = field(default_factory=requests.Session)
 
     BASE_URL = "https://servis.mgm.gov.tr/web"
@@ -87,6 +91,21 @@ class MGMWeather:
         "Origin": "https://www.mgm.gov.tr",
         "Referer": "https://www.mgm.gov.tr/",
     }
+
+    def __post_init__(self) -> None:
+        retry = Retry(
+            total=self.retry_total,
+            connect=self.retry_total,
+            read=self.retry_total,
+            status=self.retry_total,
+            backoff_factor=self.retry_backoff,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=frozenset({"GET"}),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
 
     # Düşük seviye yardımcılar
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
@@ -131,6 +150,18 @@ class MGMWeather:
             for kayit in istasyonlar:
                 if _tr_normalize(kayit.get("ilce", "")) == hedef:
                     return kayit
+            mevcut_ilceler = sorted(
+                {
+                    str(kayit.get("ilce", "")).strip()
+                    for kayit in istasyonlar
+                    if str(kayit.get("ilce", "")).strip()
+                }
+            )
+            if mevcut_ilceler:
+                raise MGMWeatherError(
+                    f"'{il}' ilinde '{ilce}' ilçesi bulunamadı. "
+                    f"Kullanılabilir ilçe(ler): {', '.join(mevcut_ilceler)}."
+                )
             raise MGMWeatherError(f"'{il}' ilinde '{ilce}' ilçesi bulunamadı.")
         return istasyonlar[0]
 

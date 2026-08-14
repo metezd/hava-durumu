@@ -28,12 +28,19 @@ Not: Flask'ın kendi sunucusu geliştirme içindir; production kullanımında `w
 
 | Uç noktalar | Açıklama |
 |---|---|
+| `GET /health` | Servis durumu (`?deep=1` ile MGM bağlantısı da kontrol edilir) |
 | `GET /istasyonlar/<il>` | O ildeki istasyonları (ilçeleri) listeler |
 | `GET /guncel/<il>?ilce=<ilce>` | Anlık hava durumu |
 | `GET /tahmin/<il>?ilce=<ilce>` | 5 günlük tahmin |
 | `GET /hava-durumu/<il>?ilce=<ilce>` | Güncel durum + tahmin |
 
 `ilce` parametresi zorunlu değil, verilmezse ilin ilk istasyonu kullanılır.
+
+MGM isteklerinde timeout/retry ayarları ortam değişkeniyle yönetilir:
+
+- `MGM_TIMEOUT` (varsayılan: `10`)
+- `MGM_RETRY_TOTAL` (varsayılan: `3`)
+- `MGM_RETRY_BACKOFF` (varsayılan: `0.3`)
 
 ## Örnek
 
@@ -67,4 +74,10 @@ curl "http://127.0.0.1:5000/hava-durumu/Istanbul?ilce=Bakirkoy"
 
 ```json
 { "basarili": false, "hata": "'X' ilinde 'Y' ilçesi bulunamadı." }
+```
+
+## Test
+
+```bash
+python -m unittest discover -s tests -v
 ```

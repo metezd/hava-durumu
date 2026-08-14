@@ -35,7 +35,11 @@ from flask import Flask, jsonify, request
 from mgm_client import MGMWeather, MGMWeatherError
 
 app = Flask(__name__)
-mgm = MGMWeather()
+mgm = MGMWeather(
+    timeout=int(os.getenv("MGM_TIMEOUT", "10")),
+    retry_total=int(os.getenv("MGM_RETRY_TOTAL", "3")),
+    retry_backoff=float(os.getenv("MGM_RETRY_BACKOFF", "0.3")),
+)
 
 
 def _hata_yanit(exc: Exception, kod: int = 502):
@@ -56,6 +60,29 @@ def istasyonlar(il: str):
         return jsonify({"basarili": True, "veri": mgm.il_istasyonlari(il)})
     except MGMWeatherError as exc:
         return _hata_yanit(exc, 404)
+
+
+@app.get("/health")
+def health():
+    deep = request.args.get("deep", "").strip().lower() in {"1", "true", "yes", "on"}
+    if not deep:
+        return jsonify({"basarili": True, "durum": "ok", "servis": "hava-durumu", "mgm": "skip"})
+    try:
+        mgm.il_istasyonlari("Ankara")
+        return jsonify({"basarili": True, "durum": "ok", "servis": "hava-durumu", "mgm": "ok"})
+    except MGMWeatherError as exc:
+        return (
+            jsonify(
+                {
+                    "basarili": False,
+                    "durum": "degraded",
+                    "servis": "hava-durumu",
+                    "mgm": "hata",
+                    "hata": str(exc),
+                }
+            ),
+            503,
+        )
 
 
 @app.get("/guncel/<il>")
