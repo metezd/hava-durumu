@@ -29,6 +29,8 @@ Uç noktalar:
 from __future__ import annotations
 
 import os
+import time
+from collections import defaultdict, deque
 
 from flask import Flask, jsonify, request
 
@@ -43,6 +45,9 @@ mgm = MGMWeather(
     cache_max_entries=int(os.getenv("MGM_CACHE_MAX_ENTRIES", "512")),
 )
 CORS_ALLOW_ORIGIN = os.getenv("APP_CORS_ALLOW_ORIGIN", "*")
+RATE_LIMIT_WINDOW = int(os.getenv("APP_RATE_LIMIT_WINDOW_SECONDS", "60"))
+RATE_LIMIT_MAX = int(os.getenv("APP_RATE_LIMIT_MAX_REQUESTS", "60"))
+RATE_LIMIT_BUCKETS = defaultdict(deque)
 
 
 def _hata_yanit(exc: Exception, kod: int = 502):
@@ -55,6 +60,31 @@ def _istasyon_id_getir(il: str, ilce: str | None) -> int | str:
     if istasyon_id is None:
         raise MGMWeatherError(f"'{il}' için geçerli istasyon kimliği bulunamadı.")
     return istasyon_id
+
+
+@app.before_request
+def rate_limit():
+    if request.method == "OPTIONS":
+        return None
+    if request.path == "/health":
+        return None
+
+    ip = request.remote_addr or "unknown"
+    now = time.monotonic()
+    bucket = RATE_LIMIT_BUCKETS[ip]
+    window_seconds = max(1, RATE_LIMIT_WINDOW)
+    while bucket and now - bucket[0] > window_seconds:
+        bucket.popleft()
+    if len(bucket) >= max(1, RATE_LIMIT_MAX):
+        retry_after = max(1, window_seconds)
+        response = jsonify({
+            "basarili": False,
+            "hata": "Çok fazla istek gönderdiniz. Lütfen birkaç saniye sonra tekrar deneyin.",
+        })
+        response.status_code = 429
+        response.headers["Retry-After"] = str(retry_after)
+        return response
+    bucket.append(now)
 
 
 @app.after_request

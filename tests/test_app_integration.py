@@ -68,6 +68,19 @@ class TestAppIntegration(unittest.TestCase):
         self.assertEqual(resp.headers.get("X-Frame-Options"), "DENY")
         self.assertEqual(resp.headers.get("Referrer-Policy"), "no-referrer")
 
+    def test_rate_limit_429(self):
+        app_module.RATE_LIMIT_MAX = 1
+        app_module.RATE_LIMIT_BUCKETS.clear()
+
+        first = self.client.get("/istasyonlar/Istanbul")
+        second = self.client.get("/istasyonlar/Istanbul")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 429)
+
+        app_module.RATE_LIMIT_MAX = 60
+        app_module.RATE_LIMIT_BUCKETS.clear()
+
 
 if __name__ == "__main__":
     unittest.main()

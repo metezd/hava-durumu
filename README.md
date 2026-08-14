@@ -49,6 +49,12 @@ CORS ve güvenlik ayarları:
 - `APP_CORS_ALLOW_ORIGIN` (varsayılan: `*`)
 - Yanıtlarda otomatik güvenlik header'ları döner (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `CSP`).
 
+Rate limiting ayarları:
+
+- `APP_RATE_LIMIT_WINDOW_SECONDS` (varsayılan: `60`)
+- `APP_RATE_LIMIT_MAX_REQUESTS` (varsayılan: `60`)
+- Aynı IP'den fazla istek gelirse `429 Too Many Requests` döner
+
 ## Örnek
 
 ```bash
