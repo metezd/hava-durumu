@@ -72,6 +72,18 @@ Cache kayıtları iki aşamalı yaşlanır:
 
 Aynı anahtar için eşzamanlı isteklerde yalnızca biri yenilemeyi yapar (işlem içi kilit + Redis `SET NX EX` kilidi). SWR'yi kapatmak için `MGM_STALE_WHILE_REVALIDATE=0` verin.
 
+### Circuit breaker
+
+MGM art arda hata verdiğinde (30 sn içinde 5 hata) devre açılır: bunu izleyen süre boyunca (60 sn) MGM'ye hiç istek atılmaz, doğrudan hata dönülür. Süre dolunca devre yarı açık olur bu tek bir deneme isteği yapılır başarılıysa devre kapanır, başarısızsa tekrar açılır.
+
+Önemli: circuit breaker yalnızca asıl ağ isteğini keser, cache/SWR katmanının önüne geçmez. Yani MGM kesintisi sırasında elinizde stale (TTL'i geçmiş ama SWR penceresi içindeki) veri varsa kullanıcı bunu almaya devam eder; breaker sadece arka planda MGM'yi gereksiz yere zorlayan/bekleten istekleri atlar. Cache'te hiç veri yoksa devre açıkken istek anında hatayla döner retry, backoff süresi boyunca beklemez.
+
+- `MGM_CIRCUIT_BREAKER_FAILURE_THRESHOLD` (varsayılan: `5`)
+- `MGM_CIRCUIT_BREAKER_WINDOW_SECONDS` (varsayılan: `30`)
+- `MGM_CIRCUIT_BREAKER_OPEN_SECONDS` (varsayılan: `60`)
+
+Durum `GET /health` (hem shallow hem `?deep=1`) yanıtında `circuit_breaker` alanıyla görülebilir: `kapali` | `acik` | `yari-acik`.
+
 CORS ve güvenlik ayarları:
 
 - `APP_CORS_ALLOW_ORIGIN` (varsayılan: `*`)

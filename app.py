@@ -46,6 +46,15 @@ mgm = MGMWeather(
     stale_while_revalidate_seconds=int(
         os.getenv("MGM_STALE_WHILE_REVALIDATE", "300")
     ),
+    circuit_breaker_failure_threshold=int(
+        os.getenv("MGM_CIRCUIT_BREAKER_FAILURE_THRESHOLD", "5")
+    ),
+    circuit_breaker_window_seconds=float(
+        os.getenv("MGM_CIRCUIT_BREAKER_WINDOW_SECONDS", "30")
+    ),
+    circuit_breaker_open_seconds=float(
+        os.getenv("MGM_CIRCUIT_BREAKER_OPEN_SECONDS", "60")
+    ),
     redis_url=os.getenv("MGM_REDIS_URL") or None,
     redis_prefix=os.getenv("MGM_REDIS_PREFIX", "mgm-cache:"),
 )
@@ -115,6 +124,8 @@ def istasyonlar(il: str):
 
 @app.get("/health")
 def health():
+    devre_durumu = mgm.circuit_breaker_saglik_ozeti()["durum"]
+
     deep = request.args.get("deep", "").strip().lower() in {"1", "true", "yes", "on"}
     if not deep:
         return jsonify(
@@ -124,6 +135,7 @@ def health():
                 "servis": "hava-durumu",
                 "mgm": "skip",
                 "redis": "skip",
+                "circuit_breaker": devre_durumu,
             }
         )
 
@@ -137,6 +149,7 @@ def health():
                     "servis": "hava-durumu",
                     "mgm": "skip",
                     "redis": "hata",
+                    "circuit_breaker": devre_durumu,
                     "hata": redis_durum["hata"],
                 }
             ),
@@ -152,6 +165,7 @@ def health():
                 "servis": "hava-durumu",
                 "mgm": "ok",
                 "redis": redis_durum["durum"],
+                "circuit_breaker": mgm.circuit_breaker_saglik_ozeti()["durum"],
             }
         )
     except MGMWeatherError as exc:
@@ -163,6 +177,7 @@ def health():
                     "servis": "hava-durumu",
                     "mgm": "hata",
                     "redis": redis_durum["durum"],
+                    "circuit_breaker": mgm.circuit_breaker_saglik_ozeti()["durum"],
                     "hata": str(exc),
                 }
             ),

@@ -43,6 +43,15 @@ REDIS_HEALTH_CHECK_INTERVAL = 30
 _CACHED_AT_KEY = "_cachedAt"
 _VALUE_KEY = "_value"
 
+# Circuit breaker varsayılanları: MGM art arda hata verirse (varsayılan
+# olarak 30 sn içinde 5 hata) devre açılır ve bu süre boyunca MGM'ye hiç
+# istek atılmadan doğrudan hata dönülür. Cache/Redis (SWR) katmanı ayrı
+# çalışır: elde stale veri varsa breaker açıkken bile o veri kullanıcıya
+# dönmeye devam eder sadece asıl ağ isteği atlanır
+CIRCUIT_BREAKER_FAILURE_THRESHOLD = 5
+CIRCUIT_BREAKER_WINDOW_SECONDS = 30.0
+CIRCUIT_BREAKER_OPEN_SECONDS = 60.0
+
 
 @dataclass
 class _InFlight:
@@ -57,8 +66,85 @@ class _InFlight:
     hata: BaseException | None = None
 
 
+@dataclass
+class _CircuitBreaker:
+    """Kayan pencereli, üç durumlu (kapalı/açık/yarı açık) circuit breaker.
+
+    - **Kapalı**: her istek MGM'ye normal şekilde gider.
+    - Pencere (`window_seconds`) içinde `failure_threshold` sayıda hata
+      birikirse devre **açılır**: `open_seconds` boyunca hiçbir istek MGM'ye
+      gitmez direkt `MGMWeatherError` fırlatılır.
+    - `open_seconds` dolunca devre **yarı açık** olur: tek bir deneme
+      isteğine izin verilir. Başarılı olursa devre kapanır ve sayaçlar
+      sıfırlanır; başarısız olursa devre tekrar `open_seconds` için açılır.
+
+    Thread-safe'tir; birden çok iş parçacığı aynı anda `basarisiz()` /
+    `izin_var_mi()` çağırabilir.
+    """
+
+    failure_threshold: int
+    window_seconds: float
+    open_seconds: float
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _hatalar: list[float] = field(default_factory=list, init=False)
+    _acilma_zamani: float | None = field(default=None, init=False)
+    _yari_acik_deneme_suruyor: bool = field(default=False, init=False)
+
+    def izin_var_mi(self) -> bool:
+        """Şu an bir MGM isteğine izin verilip verilmeyeceğini döndürür.
+
+        Devre yarı açıkken True dönen tek çağrı, deneme isteğini yapma
+        hakkını da üstlenmiş olur (diğer eşzamanlı çağrılar False alır).
+        """
+        with self._lock:
+            if self._acilma_zamani is None:
+                return True
+            gecen = time.monotonic() - self._acilma_zamani
+            if gecen < self.open_seconds:
+                return False
+            if self._yari_acik_deneme_suruyor:
+                return False
+            self._yari_acik_deneme_suruyor = True
+            return True
+
+    def basarili(self) -> None:
+        """Bir MGM isteği başarıyla tamamlandığında çağrılır; devreyi kapatır."""
+        with self._lock:
+            self._hatalar.clear()
+            self._acilma_zamani = None
+            self._yari_acik_deneme_suruyor = False
+
+    def basarisiz(self) -> None:
+        """Bir MGM isteği hatayla sonuçlandığında çağrılır."""
+        with self._lock:
+            simdi = time.monotonic()
+            if self._yari_acik_deneme_suruyor:
+                # Yarı açık deneme de başarısız oldu: devreyi tekrar aç.
+                self._yari_acik_deneme_suruyor = False
+                self._acilma_zamani = simdi
+                self._hatalar = [simdi]
+                return
+            self._hatalar = [t for t in self._hatalar if simdi - t <= self.window_seconds]
+            self._hatalar.append(simdi)
+            if len(self._hatalar) >= self.failure_threshold:
+                self._acilma_zamani = simdi
+
+    def durum(self) -> str:
+        """Gözlemlenebilirlik için mevcut durumu döndürür: kapali|acik|yari-acik."""
+        with self._lock:
+            if self._acilma_zamani is None:
+                return "kapali"
+            if time.monotonic() - self._acilma_zamani < self.open_seconds:
+                return "acik"
+            return "yari-acik"
+
+
 class MGMWeatherError(Exception):
     """MGM istemcisiyle ilgili tüm hatalar için temel sınıf."""
+
+
+class MGMCircuitOpenError(MGMWeatherError):
+    """Circuit breaker açıkken MGM'ye istek atlanınca fırlatılır."""
 
 
 # Durum kodları
@@ -110,6 +196,9 @@ class MGMWeather:
     cache_ttl_seconds: int = 60
     cache_max_entries: int = 512
     stale_while_revalidate_seconds: int = 300
+    circuit_breaker_failure_threshold: int = CIRCUIT_BREAKER_FAILURE_THRESHOLD
+    circuit_breaker_window_seconds: float = CIRCUIT_BREAKER_WINDOW_SECONDS
+    circuit_breaker_open_seconds: float = CIRCUIT_BREAKER_OPEN_SECONDS
     redis_url: str | None = None
     redis_prefix: str = "mgm-cache:"
     redis_client: Any | None = None
@@ -124,6 +213,7 @@ class MGMWeather:
     _in_flight: dict[str, _InFlight] = field(default_factory=dict, init=False)
     _in_flight_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _lock_ttl: float = field(default=0.0, init=False)
+    _circuit_breaker: _CircuitBreaker = field(default=None, init=False)  # type: ignore[assignment]
 
     BASE_URL = "https://servis.mgm.gov.tr/web"
     SUNRISE_URL = "https://api.sunrise-sunset.org/json"
@@ -143,6 +233,12 @@ class MGMWeather:
         # Arka plan yenileme görevi en fazla timeout*(retry+1) sürebilir
         # Kilit TTL'i bu sınıra marj eklenerek belirlenir.
         self._lock_ttl = float(self.timeout * (self.retry_total + 1) + 5)
+
+        self._circuit_breaker = _CircuitBreaker(
+            failure_threshold=self.circuit_breaker_failure_threshold,
+            window_seconds=self.circuit_breaker_window_seconds,
+            open_seconds=self.circuit_breaker_open_seconds,
+        )
 
         retry = Retry(
             total=self.retry_total,
@@ -340,6 +436,23 @@ class MGMWeather:
         url = f"{self.BASE_URL}/{path}"
 
         def loader() -> Any:
+            # Circuit breaker açıkken MGM'ye hiç istek atılmaz; hemen hata
+            # dönülür. Not: bu yalnızca asıl ağ isteğini engeller ve çağıran
+            # `_cached_get` zaten stale veri varsa onu döndürmüş olabilir
+            # (SWR akışı, arka planda bu loader'ı tetikler). Yani MGM
+            # kesintisi sırasında elde stale veri varsa kullanıcı bundan
+            # etkilenmez sadece breaker gereksiz/bekletici ağ isteklerini keser
+            if not self._circuit_breaker.izin_var_mi():
+                logger.warning(
+                    "Circuit breaker açık, MGM isteği atlanıyor: %s, params=%s",
+                    url,
+                    params,
+                )
+                raise MGMCircuitOpenError(
+                    "MGM servisi art arda hata verdiği için circuit breaker "
+                    f"açık; istek atlandı ({url})."
+                )
+
             headers = self.HEADERS.copy()
             if self.header_provider:
                 extra_headers = self.header_provider()
@@ -352,22 +465,28 @@ class MGMWeather:
                     url, headers=headers, params=params, timeout=self.timeout
                 )
             except requests.RequestException as exc:
+                self._circuit_breaker.basarisiz()
                 logger.error("MGM bağlantı hatası: %s", exc)
                 raise MGMWeatherError(f"MGM servisine bağlanılamadı: {exc}") from exc
 
             if resp.status_code != 200:
+                self._circuit_breaker.basarisiz()
                 logger.warning("MGM servisinden hata kodu: %d (%s)", resp.status_code, url)
                 raise MGMWeatherError(
                     f"MGM servisi beklenmeyen durum kodu döndürdü: {resp.status_code} "
                     f"({url})"
                 )
             try:
-                return resp.json()
+                sonuc = resp.json()
             except ValueError as exc:
+                self._circuit_breaker.basarisiz()
                 logger.error("MGM JSON çözümleme hatası: %s", exc)
                 raise MGMWeatherError(
                     f"MGM servisinden geçerli JSON alınamadı ({url})"
                 ) from exc
+
+            self._circuit_breaker.basarili()
+            return sonuc
 
         return self._cached_get(cache_key, loader)
 
@@ -469,6 +588,10 @@ class MGMWeather:
             return {"durum": "ok"}
         except MGMWeatherError as exc:
             return {"durum": "hata", "hata": str(exc)}
+
+    def circuit_breaker_saglik_ozeti(self) -> dict[str, str]:
+        """Circuit breaker durumunu döndürür: kapali|acik|yari-acik."""
+        return {"durum": self._circuit_breaker.durum()}
 
     def il_istasyonlari(self, il: str) -> list[dict[str, Any]]:
         """

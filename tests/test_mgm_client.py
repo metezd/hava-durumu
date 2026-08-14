@@ -2,7 +2,9 @@ import threading
 import time
 import unittest
 
-from mgm_client import MGMWeather, _tr_normalize
+import requests
+
+from mgm_client import MGMCircuitOpenError, MGMWeather, MGMWeatherError, _tr_normalize
 
 
 class _DummyResponse:
@@ -237,6 +239,166 @@ class TestStaleWhileRevalidate(unittest.TestCase):
     def test_redis_saglik_ozeti_redis_kapaliyken_skip(self):
         client = MGMWeather()
         self.assertEqual(client.redis_saglik_ozeti(), {"durum": "skip"})
+
+
+class _PatlayanSession:
+    """Her çağrıda bağlantı hatası fırlatan sahte oturum (MGM kesintisi)."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def get(self, url, **kwargs):
+        self.calls += 1
+        raise requests.ConnectionError("bağlantı reddedildi")
+
+
+class _AyarlanabilirSession:
+    """İlk `basarisiz_sayisi` çağrıda hata fırlatan, sonrasında başarılı
+    yanıt dönen sahte oturum. Yarı açık deneme senaryolarını test etmek
+    için kullanılır."""
+
+    def __init__(self, basarisiz_sayisi, payload):
+        self.basarisiz_sayisi = basarisiz_sayisi
+        self.payload = payload
+        self.calls = 0
+
+    def get(self, url, **kwargs):
+        self.calls += 1
+        if self.calls <= self.basarisiz_sayisi:
+            raise requests.ConnectionError("bağlantı reddedildi")
+        return _DummyResponse(self.payload)
+
+
+class TestCircuitBreaker(unittest.TestCase):
+    def test_esik_asilinca_devre_acilir_ve_istek_atlanir(self):
+        session = _PatlayanSession()
+        client = MGMWeather(
+            cache_ttl_seconds=0,
+            timeout=1,
+            retry_total=0,
+            circuit_breaker_failure_threshold=3,
+            circuit_breaker_window_seconds=30,
+            circuit_breaker_open_seconds=60,
+        )
+        client.session = session
+
+        for _ in range(3):
+            with self.assertRaises(MGMWeatherError):
+                client._get("merkezler", {"il": "ankara"})
+
+        self.assertEqual(session.calls, 3)
+        self.assertEqual(client.circuit_breaker_saglik_ozeti(), {"durum": "acik"})
+
+        # Devre açıkken 4. çağrı ağa hiç gitmemeli, doğrudan hata dönmeli.
+        with self.assertRaises(MGMCircuitOpenError):
+            client._get("merkezler", {"il": "ankara"})
+        self.assertEqual(session.calls, 3)
+
+    def test_pencere_disindaki_hatalar_devreyi_actirmaz(self):
+        session = _PatlayanSession()
+        client = MGMWeather(
+            cache_ttl_seconds=0,
+            timeout=1,
+            retry_total=0,
+            circuit_breaker_failure_threshold=3,
+            circuit_breaker_window_seconds=0.3,
+            circuit_breaker_open_seconds=60,
+        )
+        client.session = session
+
+        with self.assertRaises(MGMWeatherError):
+            client._get("merkezler", {"il": "ankara"})
+        time.sleep(0.4)  # pencere dışına çık
+        with self.assertRaises(MGMWeatherError):
+            client._get("merkezler", {"il": "ankara"})
+        with self.assertRaises(MGMWeatherError):
+            client._get("merkezler", {"il": "ankara"})
+
+        # Pencere kaydığı için sadece son 2 hata sayılır, devre açılmaz.
+        self.assertEqual(client.circuit_breaker_saglik_ozeti(), {"durum": "kapali"})
+        self.assertEqual(session.calls, 3)
+
+    def test_acik_devre_suresi_dolunca_yari_acik_deneme_basarili_olursa_kapanir(self):
+        session = _AyarlanabilirSession(basarisiz_sayisi=2, payload=[{"istasyonId": 1}])
+        client = MGMWeather(
+            cache_ttl_seconds=0,
+            timeout=1,
+            retry_total=0,
+            circuit_breaker_failure_threshold=2,
+            circuit_breaker_window_seconds=30,
+            circuit_breaker_open_seconds=0.3,
+        )
+        client.session = session
+
+        for _ in range(2):
+            with self.assertRaises(MGMWeatherError):
+                client._get("merkezler", {"il": "ankara"})
+        self.assertEqual(client.circuit_breaker_saglik_ozeti(), {"durum": "acik"})
+
+        # open_seconds dolmadan istek atlanmaya devam eder.
+        with self.assertRaises(MGMCircuitOpenError):
+            client._get("merkezler", {"il": "ankara"})
+        self.assertEqual(session.calls, 2)
+
+        time.sleep(0.4)  # open_seconds doldu -> yarı açık
+        sonuc = client._get("merkezler", {"il": "ankara"})
+        self.assertEqual(sonuc, session.payload)
+        self.assertEqual(session.calls, 3)
+        self.assertEqual(client.circuit_breaker_saglik_ozeti(), {"durum": "kapali"})
+
+    def test_yari_acik_deneme_basarisiz_olursa_devre_tekrar_acilir(self):
+        session = _PatlayanSession()
+        client = MGMWeather(
+            cache_ttl_seconds=0,
+            timeout=1,
+            retry_total=0,
+            circuit_breaker_failure_threshold=1,
+            circuit_breaker_window_seconds=30,
+            circuit_breaker_open_seconds=0.3,
+        )
+        client.session = session
+
+        with self.assertRaises(MGMWeatherError):
+            client._get("merkezler", {"il": "ankara"})
+        self.assertEqual(client.circuit_breaker_saglik_ozeti(), {"durum": "acik"})
+
+        time.sleep(0.4)  # yarı açık deneme hakkı doğar
+        with self.assertRaises(MGMWeatherError):
+            client._get("merkezler", {"il": "ankara"})
+        self.assertEqual(client.circuit_breaker_saglik_ozeti(), {"durum": "acik"})
+        self.assertEqual(session.calls, 2)
+
+    def test_devre_acikken_stale_cache_verisi_donmeye_devam_eder(self):
+        """Redis/in-memory cache tampon görevi görür: breaker açık olsa da
+        stale-while-revalidate penceresindeki eski veri kullanıcıya
+        dönmeye devam eder; sadece arka plandaki asıl ağ isteği atlanır."""
+        eski_yuk = [{"deger": 1}]
+        session = _PatlayanSession()
+        client = MGMWeather(
+            cache_ttl_seconds=1,
+            stale_while_revalidate_seconds=300,
+            timeout=1,
+            retry_total=0,
+            circuit_breaker_failure_threshold=1,
+            circuit_breaker_window_seconds=30,
+            circuit_breaker_open_seconds=60,
+        )
+        # Önce cache'i başarılı bir yanıtla doldur.
+        basarili_session = _CountingSession(eski_yuk)
+        client.session = basarili_session
+        ilk = client._get("merkezler", {"il": "ankara"})
+        self.assertEqual(ilk, eski_yuk)
+
+        # Devreyi patlayan oturumla aç.
+        client.session = session
+        time.sleep(1.2)  # TTL geçsin, stale pencereye düşsün
+        ikinci = client._get("merkezler", {"il": "ankara"})
+        self.assertEqual(ikinci, eski_yuk)
+        self.assertEqual(client.circuit_breaker_saglik_ozeti(), {"durum": "acik"})
+
+        time.sleep(0.2)  # arka plan yenileme denemesinin bitmesini bekle
+        ucuncu = client._get("merkezler", {"il": "ankara"})
+        self.assertEqual(ucuncu, eski_yuk)  # devre açık: hâlâ eski veri
 
 
 if __name__ == "__main__":

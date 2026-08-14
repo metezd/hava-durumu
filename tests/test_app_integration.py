@@ -9,9 +9,13 @@ class FakeMGM:
         self,
         should_fail_health: bool = False,
         redis_durum: dict[str, str] | None = None,
+        circuit_breaker_durum: dict[str, str] | None = None,
     ):
         self.should_fail_health = should_fail_health
         self.redis_durum = redis_durum if redis_durum is not None else {"durum": "skip"}
+        self.circuit_breaker_durum = (
+            circuit_breaker_durum if circuit_breaker_durum is not None else {"durum": "kapali"}
+        )
 
     def il_istasyonlari(self, il: str):
         if self.should_fail_health:
@@ -20,6 +24,9 @@ class FakeMGM:
 
     def redis_saglik_ozeti(self):
         return dict(self.redis_durum)
+
+    def circuit_breaker_saglik_ozeti(self):
+        return dict(self.circuit_breaker_durum)
 
     def ilce_istasyonu(self, il: str, ilce: str | None = None):
         return {"il": il, "ilce": ilce or "Bakırköy", "merkezId": 93401}
@@ -84,6 +91,20 @@ class TestAppIntegration(unittest.TestCase):
         data = resp.get_json()
         self.assertFalse(data["basarili"])
         self.assertEqual(data["durum"], "degraded")
+
+    def test_health_shallow_circuit_breaker_alani_doner(self):
+        app_module.mgm = FakeMGM(circuit_breaker_durum={"durum": "acik"})
+        resp = self.client.get("/health")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["circuit_breaker"], "acik")
+
+    def test_health_deep_circuit_breaker_alani_doner(self):
+        app_module.mgm = FakeMGM(circuit_breaker_durum={"durum": "yari-acik"})
+        resp = self.client.get("/health?deep=1")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["circuit_breaker"], "yari-acik")
 
     def test_hava_durumu_endpoint(self):
         resp = self.client.get("/hava-durumu/Istanbul?ilce=Bakirkoy")
