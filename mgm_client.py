@@ -20,14 +20,23 @@ from __future__ import annotations
 import copy
 import datetime as _dt
 import json
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+logger = logging.getLogger("mgm_client")
+
+# Cache altyapısı ana istek akışını asla uzun süre bloklamamalı 
+# bu nedenle değerler bilinçli olarak düşük tutulur.
+REDIS_CONNECT_TIMEOUT = 2.0
+REDIS_SOCKET_TIMEOUT = 2.0
+REDIS_HEALTH_CHECK_INTERVAL = 30
 
 
 class MGMWeatherError(Exception):
@@ -85,6 +94,7 @@ class MGMWeather:
     redis_url: str | None = None
     redis_prefix: str = "mgm-cache:"
     redis_client: Any | None = None
+    header_provider: Callable[[], dict[str, str]] | None = None
     session: requests.Session = field(default_factory=requests.Session)
     _cache: dict[str, tuple[float, Any]] = field(default_factory=dict, init=False)
     _cache_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
@@ -129,50 +139,76 @@ class MGMWeather:
                 import redis
             except ImportError as exc:
                 raise MGMWeatherError(
-                    "Redis cache icin 'redis' paketi kurulu degil. "
-                    "`pip install -r requirements.txt` calistirin."
+                    "Redis cache için 'redis' paketi kurulu değil. "
+                    "`pip install -r requirements.txt` çalıştırın."
                 ) from exc
             try:
-                self.redis_client = redis.Redis.from_url(self.redis_url, decode_responses=True)
+                self.redis_client = redis.Redis.from_url(
+                    self.redis_url,
+                    decode_responses=True,
+                    socket_connect_timeout=REDIS_CONNECT_TIMEOUT,
+                    socket_timeout=REDIS_SOCKET_TIMEOUT,
+                    health_check_interval=REDIS_HEALTH_CHECK_INTERVAL,
+                )
                 self.redis_client.ping()
             except redis.RedisError as exc:
-                raise MGMWeatherError(f"Redis baglantisi kurulamadi: {exc}") from exc
+                raise MGMWeatherError(f"Redis bağlantısı kurulamadı: {exc}") from exc
             self._redis_error_cls = redis.RedisError
             self._redis_available = True
 
     # Düşük seviye yardımcılar
-    def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        cache_key = self._cache_key(path, params)
-        redis_cached = self._redis_get(cache_key)
+    def _cached_get(self, key: str, loader: Callable[[], Any]) -> Any:
+        """Önce Redis'e, sonra bellek cache'ine bakar; isabet yoksa loader'ı çalıştırır."""
+        redis_cached = self._redis_get(key)
         if redis_cached is not None:
+            logger.info("Redis cache hit: %s", key)
             return redis_cached
 
-        cached = self._cache_get(cache_key)
+        cached = self._cache_get(key)
         if cached is not None:
+            logger.info("Memory cache hit: %s", key)
             return cached
 
-        url = f"{self.BASE_URL}/{path}"
-        try:
-            resp = self.session.get(
-                url, headers=self.HEADERS, params=params, timeout=self.timeout
-            )
-        except requests.RequestException as exc:
-            raise MGMWeatherError(f"MGM servisine bağlanılamadı: {exc}") from exc
+        payload = loader()
+        self._cache_set(key, payload)
+        self._redis_set(key, payload)
+        return payload
 
-        if resp.status_code != 200:
-            raise MGMWeatherError(
-                f"MGM servisi beklenmeyen durum kodu döndürdü: {resp.status_code} "
-                f"({url})"
-            )
-        try:
-            data = resp.json()
-        except ValueError as exc:
-            raise MGMWeatherError(
-                f"MGM servisinden geçerli JSON alınamadı ({url})"
-            ) from exc
-        self._cache_set(cache_key, data)
-        self._redis_set(cache_key, data)
-        return data
+    def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        cache_key = self._cache_key(path, params)
+        url = f"{self.BASE_URL}/{path}"
+
+        def loader() -> Any:
+            headers = self.HEADERS.copy()
+            if self.header_provider:
+                extra_headers = self.header_provider()
+                if extra_headers:
+                    headers.update(extra_headers)
+
+            logger.info("İstek atılıyor: %s, params=%s", url, params)
+            try:
+                resp = self.session.get(
+                    url, headers=headers, params=params, timeout=self.timeout
+                )
+            except requests.RequestException as exc:
+                logger.error("MGM bağlantı hatası: %s", exc)
+                raise MGMWeatherError(f"MGM servisine bağlanılamadı: {exc}") from exc
+
+            if resp.status_code != 200:
+                logger.warning("MGM servisinden hata kodu: %d (%s)", resp.status_code, url)
+                raise MGMWeatherError(
+                    f"MGM servisi beklenmeyen durum kodu döndürdü: {resp.status_code} "
+                    f"({url})"
+                )
+            try:
+                return resp.json()
+            except ValueError as exc:
+                logger.error("MGM JSON çözümleme hatası: %s", exc)
+                raise MGMWeatherError(
+                    f"MGM servisinden geçerli JSON alınamadı ({url})"
+                ) from exc
+
+        return self._cached_get(cache_key, loader)
 
     def _cache_key(self, path: str, params: dict[str, Any] | None = None) -> str:
         serialized = json.dumps(params or {}, sort_keys=True, ensure_ascii=False)
@@ -205,29 +241,38 @@ class MGMWeather:
     def _redis_key(self, key: str) -> str:
         return f"{self.redis_prefix}{key}"
 
+    def _redis_islem(self, islem: Callable[[], Any], hata_mesaji: str) -> Any:
+        """Redis çağrısını yürütür ve gerçek istemcide hataları MGMWeatherError'a sarar.
+
+        Testlerde enjekte edilen sahte istemciler için hata sarmalama yapılmaz.
+        """
+        if self._redis_error_cls is None:
+            return islem()
+        try:
+            return islem()
+        except self._redis_error_cls as exc:
+            raise MGMWeatherError(f"{hata_mesaji}: {exc}") from exc
+
     def _redis_get(self, key: str) -> Any | None:
         if not self._redis_available or self.cache_ttl_seconds <= 0:
             return None
         assert self.redis_client is not None
 
-        if self._redis_error_cls is not None:
-            try:
-                value = self.redis_client.get(self._redis_key(key))
-            except self._redis_error_cls as exc:
-                raise MGMWeatherError(f"Redis cache okuma hatasi: {exc}") from exc
-        else:
-            value = self.redis_client.get(self._redis_key(key))
+        value = self._redis_islem(
+            lambda: self.redis_client.get(self._redis_key(key)),
+            "Redis cache okuma hatası",
+        )
 
         if value is None:
             return None
         if isinstance(value, (bytes, bytearray)):
             value = value.decode("utf-8")
         if not isinstance(value, str):
-            raise MGMWeatherError("Redis cache verisi beklenen formatta degil.")
+            raise MGMWeatherError("Redis cache verisi beklenen formatta değil.")
         try:
             return json.loads(value)
         except ValueError as exc:
-            raise MGMWeatherError(f"Redis cache verisi cozumlenemedi: {exc}") from exc
+            raise MGMWeatherError(f"Redis cache verisi çözümlenemedi: {exc}") from exc
 
     def _redis_set(self, key: str, payload: Any) -> None:
         if not self._redis_available or self.cache_ttl_seconds <= 0:
@@ -235,13 +280,12 @@ class MGMWeather:
         assert self.redis_client is not None
         serialized = json.dumps(payload, ensure_ascii=False)
 
-        if self._redis_error_cls is not None:
-            try:
-                self.redis_client.setex(self._redis_key(key), self.cache_ttl_seconds, serialized)
-            except self._redis_error_cls as exc:
-                raise MGMWeatherError(f"Redis cache yazma hatasi: {exc}") from exc
-        else:
-            self.redis_client.setex(self._redis_key(key), self.cache_ttl_seconds, serialized)
+        self._redis_islem(
+            lambda: self.redis_client.setex(
+                self._redis_key(key), self.cache_ttl_seconds, serialized
+            ),
+            "Redis cache yazma hatası",
+        )
 
     def il_istasyonlari(self, il: str) -> list[dict[str, Any]]:
         """
@@ -339,21 +383,30 @@ class MGMWeather:
 
     # Gün doğumu ve batımı (sunrise-sunset.org üzerinden)
     def gun_dogumu_batimi(self, enlem: float, boylam: float) -> dict[str, str]:
-        try:
-            resp = self.session.get(
-                self.SUNRISE_URL,
-                params={"lat": enlem, "lng": boylam, "formatted": 0},
-                timeout=self.timeout,
-            )
-            resp.raise_for_status()
-            sonuc = resp.json()["results"]
-        except (requests.RequestException, KeyError, ValueError) as exc:
-            raise MGMWeatherError(f"Gün doğumu/batımı verisi alınamadı: {exc}") from exc
+        params = {"lat": enlem, "lng": boylam, "formatted": 0}
+        cache_key = self._cache_key("gun-dogumu-batimi", params)
 
-        tz = _dt.timezone(_dt.timedelta(hours=3))  # Bizim saat (UTC+3)
-        dogum = _dt.datetime.fromisoformat(sonuc["sunrise"]).astimezone(tz)
-        batim = _dt.datetime.fromisoformat(sonuc["sunset"]).astimezone(tz)
-        return {"gunDogumu": dogum.strftime("%H:%M"), "gunBatimi": batim.strftime("%H:%M")}
+        def loader() -> dict[str, str]:
+            try:
+                resp = self.session.get(
+                    self.SUNRISE_URL, params=params, timeout=self.timeout
+                )
+                resp.raise_for_status()
+                sonuc = resp.json()["results"]
+            except (requests.RequestException, KeyError, ValueError) as exc:
+                raise MGMWeatherError(
+                    f"Gün doğumu/batımı verisi alınamadı: {exc}"
+                ) from exc
+
+            tz = _dt.timezone(_dt.timedelta(hours=3))  # Bizim saat (UTC+3)
+            dogum = _dt.datetime.fromisoformat(sonuc["sunrise"]).astimezone(tz)
+            batim = _dt.datetime.fromisoformat(sonuc["sunset"]).astimezone(tz)
+            return {
+                "gunDogumu": dogum.strftime("%H:%M"),
+                "gunBatimi": batim.strftime("%H:%M"),
+            }
+
+        return self._cached_get(cache_key, loader)
 
     def hava_durumu(self, il: str, ilce: str | None = None) -> dict[str, Any]:
         """

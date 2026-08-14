@@ -8,6 +8,9 @@ class _DummyResponse:
         self.status_code = 200
         self._payload = payload
 
+    def raise_for_status(self):
+        return None
+
     def json(self):
         return self._payload
 
@@ -17,7 +20,7 @@ class _CountingSession:
         self.calls = 0
         self.payload = payload
 
-    def get(self, url, headers, params, timeout):
+    def get(self, url, **kwargs):
         self.calls += 1
         return _DummyResponse(self.payload)
 
@@ -59,6 +62,41 @@ class TestMGMClientUnit(unittest.TestCase):
 
         client._get("merkezler", {"il": "ankara"})
         client._get("merkezler", {"il": "ankara"})
+
+        self.assertEqual(fake_session.calls, 2)
+
+    def test_gun_dogumu_batimi_ayni_konum_icin_cache_lenir(self):
+        payload = {
+            "results": {
+                "sunrise": "2026-08-14T04:00:00+00:00",
+                "sunset": "2026-08-14T18:30:00+00:00",
+            }
+        }
+        client = MGMWeather(cache_ttl_seconds=3600)
+        fake_session = _CountingSession(payload)
+        client.session = fake_session
+
+        ilk = client.gun_dogumu_batimi(40.98, 29.02)
+        ikinci = client.gun_dogumu_batimi(40.98, 29.02)
+
+        self.assertEqual(fake_session.calls, 1)
+        self.assertEqual(ilk, ikinci)
+        self.assertEqual(ilk["gunDogumu"], "07:00")
+        self.assertEqual(ilk["gunBatimi"], "21:30")
+
+    def test_gun_dogumu_batimi_farkli_konumda_istek_tekrarlanir(self):
+        payload = {
+            "results": {
+                "sunrise": "2026-08-14T04:00:00+00:00",
+                "sunset": "2026-08-14T18:30:00+00:00",
+            }
+        }
+        client = MGMWeather(cache_ttl_seconds=3600)
+        fake_session = _CountingSession(payload)
+        client.session = fake_session
+
+        client.gun_dogumu_batimi(40.98, 29.02)
+        client.gun_dogumu_batimi(41.02, 28.97)
 
         self.assertEqual(fake_session.calls, 2)
 

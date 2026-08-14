@@ -155,6 +155,17 @@ def tahmin(il: str):
         return _hata_yanit(exc, 404)
 
 
+@app.get("/saatlik/<il>")
+def saatlik(il: str):
+    ilce = request.args.get("ilce")
+    try:
+        istasyon_id = _istasyon_id_getir(il, ilce)
+        veri = mgm.saatlik_tahmin(istasyon_id)
+        return jsonify({"basarili": True, "veri": veri})
+    except MGMWeatherError as exc:
+        return _hata_yanit(exc, 404)
+
+
 @app.get("/hava-durumu/<il>")
 def hava_durumu(il: str):
     ilce = request.args.get("ilce")

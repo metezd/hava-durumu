@@ -32,17 +32,34 @@ Not: Flask'ın kendi sunucusu geliştirme içindir; production kullanımında `w
 | `GET /istasyonlar/<il>` | O ildeki istasyonları (ilçeleri) listeler |
 | `GET /guncel/<il>?ilce=<ilce>` | Anlık hava durumu |
 | `GET /tahmin/<il>?ilce=<ilce>` | 5 günlük tahmin |
+| `GET /saatlik/<il>?ilce=<ilce>` | Saatlik tahmin |
 | `GET /hava-durumu/<il>?ilce=<ilce>` | Güncel durum + tahmin |
 
 `ilce` parametresi zorunlu değil, verilmezse ilin ilk istasyonu kullanılır.
 
-MGM isteklerinde timeout/retry ayarları ortam değişkeniyle yönetilir:
+## Redis cache (opsiyonel)
+
+Uygulama yanında opsiyonel bir Redis veya [Redis Stack](https://redis.io/docs/latest/operate/oss_and_stack/install/install-stack/) kullanabilirsiniz. Redis sunucusunu `docker run -d --rm -p 6379:6379 redis:7-alpine` ile ayağa kaldırabilirsiniz.
+
+`MGM_REDIS_URL` ortam değişkeni set edilirse Redis birincil cache olur (in-memory cache'in önüne geçer):
+
+```bash
+MGM_REDIS_URL="redis://localhost:6379/0" python app.py
+```
+
+Redis'e bağlanılamazsa uygulama hata verip durur; uygulamayı Redis olmadan kullanmak istiyorsanız değişkeni set etmeyin — bu durumda in-memory cache devreye girer.
+
+MGM isteklerinde timeout/retry/cache ayarları ortam değişkeniyle yönetilir:
 
 - `MGM_TIMEOUT` (varsayılan: `10`)
 - `MGM_RETRY_TOTAL` (varsayılan: `3`)
 - `MGM_RETRY_BACKOFF` (varsayılan: `0.3`)
 - `MGM_CACHE_TTL` (varsayılan: `60`, saniye)
 - `MGM_CACHE_MAX_ENTRIES` (varsayılan: `512`)
+- `MGM_REDIS_URL` (varsayılan: yok — Redis kapalı)
+- `MGM_REDIS_PREFIX` (varsayılan: `mgm-cache:`)
+
+Redis cache'te **socket timeout (2 sn)** ve **connect timeout (2 sn)** zorunlu olarak uygulanır; bu sayede Redis'in yavaşlaması veya çökmesi istek akışını uzun süre bloklamaz. Gün doğumu/batımı verisi de aynı cache altyapısından geçer.
 
 CORS ve güvenlik ayarları:
 

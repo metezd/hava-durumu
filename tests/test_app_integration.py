@@ -13,6 +13,9 @@ class FakeMGM:
             raise MGMWeatherError("MGM servisine bağlanılamadı")
         return [{"il": il, "ilce": "Bakırköy", "merkezId": 93401}]
 
+    def ilce_istasyonu(self, il: str, ilce: str | None = None):
+        return {"il": il, "ilce": ilce or "Bakırköy", "merkezId": 93401}
+
     def hava_durumu(self, il: str, ilce: str | None = None):
         return {
             "il": il,
@@ -20,6 +23,9 @@ class FakeMGM:
             "guncel": {"sicaklik": 27.1, "durum": "Çok Bulutlu"},
             "tahmin": [{"tarih": "2026-08-14", "durum": "Parçalı Bulutlu"}],
         }
+
+    def saatlik_tahmin(self, istasyon_id: int | str):
+        return [{"gun": "2026-08-14", "saat": "12:00", "sicaklik": 27.0}]
 
 
 class TestAppIntegration(unittest.TestCase):
@@ -59,6 +65,13 @@ class TestAppIntegration(unittest.TestCase):
         data = resp.get_json()
         self.assertTrue(data["basarili"])
         self.assertEqual(data["veri"]["ilce"], "Bakirkoy")
+
+    def test_saatlik_endpoint(self):
+        resp = self.client.get("/saatlik/Istanbul?ilce=Bakirkoy")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data["basarili"])
+        self.assertEqual(data["veri"], [{"gun": "2026-08-14", "saat": "12:00", "sicaklik": 27.0}])
 
     def test_cors_ve_guvenlik_headerlari(self):
         resp = self.client.get("/health")
