@@ -54,12 +54,23 @@ MGM isteklerinde timeout/retry/cache ayarları ortam değişkeniyle yönetilir:
 - `MGM_TIMEOUT` (varsayılan: `10`)
 - `MGM_RETRY_TOTAL` (varsayılan: `3`)
 - `MGM_RETRY_BACKOFF` (varsayılan: `0.3`)
-- `MGM_CACHE_TTL` (varsayılan: `60`, saniye)
+- `MGM_CACHE_TTL` (varsayılan: `60`)
+- `MGM_STALE_WHILE_REVALIDATE` (varsayılan: `300`)
 - `MGM_CACHE_MAX_ENTRIES` (varsayılan: `512`)
 - `MGM_REDIS_URL` (varsayılan: yok — Redis kapalı)
 - `MGM_REDIS_PREFIX` (varsayılan: `mgm-cache:`)
 
 Redis cache'te **socket timeout (2 sn)** ve **connect timeout (2 sn)** zorunlu olarak uygulanır; bu sayede Redis'in yavaşlaması veya çökmesi istek akışını uzun süre bloklamaz. Gün doğumu/batımı verisi de aynı cache altyapısından geçer.
+
+### Stale-while-revalidate (SWR)
+
+Cache kayıtları iki aşamalı yaşlanır:
+
+- **Taze dönem (`MGM_CACHE_TTL`):** kayıt doğrudan döner.
+- **Stale dönem (`MGM_STALE_WHILE_REVALIDATE`):** TTL dolduktan sonra kullanıcıya eski veri **anında** döner, yeni veri arka planda getirilip cache güncellenir. İstek MGM'nin yavaşlığından etkilenmez.
+- Stale dönemi de dolarsa istek bloklayıcı şekilde MGM'den taze veri çeker.
+
+Aynı anahtar için eşzamanlı isteklerde yalnızca biri yenilemeyi yapar (işlem içi kilit + Redis `SET NX EX` kilidi). SWR'yi kapatmak için `MGM_STALE_WHILE_REVALIDATE=0` verin.
 
 CORS ve güvenlik ayarları:
 

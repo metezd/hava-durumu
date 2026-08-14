@@ -32,11 +32,16 @@ from urllib3.util.retry import Retry
 
 logger = logging.getLogger("mgm_client")
 
-# Cache altyapısı ana istek akışını asla uzun süre bloklamamalı 
+# Cache altyapısı ana istek akışını asla uzun süre bloklamamalı
 # bu nedenle değerler bilinçli olarak düşük tutulur.
 REDIS_CONNECT_TIMEOUT = 2.0
 REDIS_SOCKET_TIMEOUT = 2.0
 REDIS_HEALTH_CHECK_INTERVAL = 30
+
+# Redis cache kayıt sarmalayıcısındaki anahtarlar. SWR için verinin yazılma
+# zamanı da saklanır.
+_CACHED_AT_KEY = "_cachedAt"
+_VALUE_KEY = "_value"
 
 
 class MGMWeatherError(Exception):
@@ -91,15 +96,19 @@ class MGMWeather:
     retry_backoff: float = 0.3
     cache_ttl_seconds: int = 60
     cache_max_entries: int = 512
+    stale_while_revalidate_seconds: int = 300
     redis_url: str | None = None
     redis_prefix: str = "mgm-cache:"
     redis_client: Any | None = None
     header_provider: Callable[[], dict[str, str]] | None = None
     session: requests.Session = field(default_factory=requests.Session)
-    _cache: dict[str, tuple[float, Any]] = field(default_factory=dict, init=False)
+    _cache: dict[str, tuple[float, float, Any]] = field(default_factory=dict, init=False)
     _cache_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _redis_available: bool = field(default=False, init=False)
     _redis_error_cls: type[BaseException] | None = field(default=None, init=False)
+    _renewing: set[str] = field(default_factory=set, init=False)
+    _renew_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _lock_ttl: float = field(default=0.0, init=False)
 
     BASE_URL = "https://servis.mgm.gov.tr/web"
     SUNRISE_URL = "https://api.sunrise-sunset.org/json"
@@ -116,6 +125,10 @@ class MGMWeather:
     }
 
     def __post_init__(self) -> None:
+        # Arka plan yenileme görevi en fazla timeout*(retry+1) sürebilir
+        # Kilit TTL'i bu sınıra marj eklenerek belirlenir.
+        self._lock_ttl = float(self.timeout * (self.retry_total + 1) + 5)
+
         retry = Retry(
             total=self.retry_total,
             connect=self.retry_total,
@@ -157,22 +170,114 @@ class MGMWeather:
             self._redis_available = True
 
     # Düşük seviye yardımcılar
+    def _cache_omru(self) -> int:
+        """Bir cache kaydının diskte/ bellekte tutulacağı toplam süre (TTL + SWR)."""
+        swr = self.stale_while_revalidate_seconds if self._swr_aktif() else 0
+        return self.cache_ttl_seconds + swr
+
     def _cached_get(self, key: str, loader: Callable[[], Any]) -> Any:
-        """Önce Redis'e, sonra bellek cache'ine bakar; isabet yoksa loader'ı çalıştırır."""
-        redis_cached = self._redis_get(key)
-        if redis_cached is not None:
-            logger.info("Redis cache hit: %s", key)
-            return redis_cached
+        """Stale-while-revalidate cache akışı.
 
-        cached = self._cache_get(key)
-        if cached is not None:
-            logger.info("Memory cache hit: %s", key)
-            return cached
+        Kayıt tazeyse (TTL içinde) doğrudan döner. TTL geçmiş ama stale
+        penceresi içindeyse eski veriyi anında döner ve arka planda yeniler.
+        Pencere de geçtiyse bloklayıcı şekilde yeniden yükler.
+        """
+        kayit = self._kayit_sec(key)
+        if kayit is not None:
+            payload, yazilma_zamani = kayit
+            yas = time.time() - yazilma_zamani
+            if yas <= self.cache_ttl_seconds:
+                logger.info("Cache hit (taze): %s", key)
+                return payload
+            if self._swr_aktif() and yas <= self._stale_limit_saniye():
+                logger.info("Cache hit (stale, arka planda yenileniyor): %s", key)
+                if self._renew_try_lock(key):
+                    self._arka_planda_yenile(key, loader)
+                return payload
 
+        logger.info("Cache miss: %s", key)
         payload = loader()
         self._cache_set(key, payload)
         self._redis_set(key, payload)
         return payload
+
+    def _swr_aktif(self) -> bool:
+        return self.stale_while_revalidate_seconds > 0
+
+    def _stale_limit_saniye(self) -> float:
+        """Stale verinin ne kadar süre daha sunulabileceğini verir (tazelik + SWR)."""
+        return self.cache_ttl_seconds + self.stale_while_revalidate_seconds
+
+    def _kayit_sec(self, key: str) -> tuple[Any, float] | None:
+        """Redis'ten, yoksa bellekten (veri, yazılma zamanı) kaydını döndürür."""
+        redis_kayit = self._redis_get(key)
+        if redis_kayit is not None:
+            return redis_kayit
+        return self._cache_get(key)
+
+    def _renew_try_lock(self, key: str) -> bool:
+        """Aynı anahtarı aynı anda tek yenileyenin yüklemesini sağlar.
+
+        Önce işlem içi kilit, Redis varsa ardından SET NX EX ile çalışanlar
+        arası kilit alınır. Redis kilidi kilitliyse görev atlanır.
+        """
+        with self._renew_lock:
+            if key in self._renewing:
+                return False
+            self._renewing.add(key)
+
+        if self._redis_available:
+            kilit_anahtari = self._redis_key(key) + ":swr-lock"
+            lock_ttl = max(1.0, self._lock_ttl)
+            try:
+                kazanildi = self._redis_islem(
+                    lambda: self.redis_client.set(
+                        kilit_anahtari, "1", nx=True, ex=lock_ttl
+                    ),
+                    "Redis yenileme kilidi hatası",
+                )
+            except MGMWeatherError:
+                logger.warning("Redis yenileme kilidi alınamadı: %s", key)
+                with self._renew_lock:
+                    self._renewing.discard(key)
+                return False
+            if not kazanildi:
+                with self._renew_lock:
+                    self._renewing.discard(key)
+                return False
+        return True
+
+    def _renew_release(self, key: str) -> None:
+        if self._redis_available:
+            kilit_anahtari = self._redis_key(key) + ":swr-lock"
+            try:
+                self._redis_islem(
+                    lambda: self.redis_client.delete(kilit_anahtari),
+                    "Redis yenileme kilidi bırakma hatası",
+                )
+            except MGMWeatherError:
+                logger.debug("Redis yenileme kilidi bırakılamadı: %s", key)
+        with self._renew_lock:
+            self._renewing.discard(key)
+
+    def _arka_planda_yenile(self, key: str, loader: Callable[[], Any]) -> None:
+        """Stale veri döndükten sonra cache'i arka planda günceller"""
+
+        def gorev() -> None:
+            try:
+                yeni = loader()
+                self._cache_set(key, yeni)
+                self._redis_set(key, yeni)
+                logger.info("Arka plan cache yenileme tamamlandı: %s", key)
+            except MGMWeatherError as exc:
+                logger.warning("Arka plan cache yenileme başarısız: %s (%s)", key, exc)
+            finally:
+                self._renew_release(key)
+
+        thread = threading.Thread(
+            target=gorev, daemon=True, name=f"swr-{key[:24]}"
+        )
+        thread.start()
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         cache_key = self._cache_key(path, params)
@@ -214,7 +319,7 @@ class MGMWeather:
         serialized = json.dumps(params or {}, sort_keys=True, ensure_ascii=False)
         return f"{path}?{serialized}"
 
-    def _cache_get(self, key: str) -> Any | None:
+    def _cache_get(self, key: str) -> tuple[Any, float] | None:
         if self.cache_ttl_seconds <= 0:
             return None
         now = time.monotonic()
@@ -222,21 +327,23 @@ class MGMWeather:
             entry = self._cache.get(key)
             if entry is None:
                 return None
-            expires_at, payload = entry
+            expires_at, yazilma_zamani, payload = entry
             if expires_at <= now:
+                # Kayıt tamamen öldü (TTL + SWR penceresi doldu)
                 del self._cache[key]
                 return None
-            return copy.deepcopy(payload)
+            return copy.deepcopy(payload), yazilma_zamani
 
     def _cache_set(self, key: str, payload: Any) -> None:
         if self.cache_ttl_seconds <= 0:
             return
-        expires_at = time.monotonic() + self.cache_ttl_seconds
+        expires_at = time.monotonic() + self._cache_omru()
+        yazilma_zamani = time.time()
         with self._cache_lock:
             if len(self._cache) >= self.cache_max_entries:
                 oldest_key = min(self._cache.items(), key=lambda item: item[1][0])[0]
                 del self._cache[oldest_key]
-            self._cache[key] = (expires_at, copy.deepcopy(payload))
+            self._cache[key] = (expires_at, yazilma_zamani, copy.deepcopy(payload))
 
     def _redis_key(self, key: str) -> str:
         return f"{self.redis_prefix}{key}"
@@ -253,7 +360,7 @@ class MGMWeather:
         except self._redis_error_cls as exc:
             raise MGMWeatherError(f"{hata_mesaji}: {exc}") from exc
 
-    def _redis_get(self, key: str) -> Any | None:
+    def _redis_get(self, key: str) -> tuple[Any, float] | None:
         if not self._redis_available or self.cache_ttl_seconds <= 0:
             return None
         assert self.redis_client is not None
@@ -270,19 +377,25 @@ class MGMWeather:
         if not isinstance(value, str):
             raise MGMWeatherError("Redis cache verisi beklenen formatta değil.")
         try:
-            return json.loads(value)
+            kayit = json.loads(value)
         except ValueError as exc:
             raise MGMWeatherError(f"Redis cache verisi çözümlenemedi: {exc}") from exc
+        if not isinstance(kayit, dict) or _VALUE_KEY not in kayit or _CACHED_AT_KEY not in kayit:
+            raise MGMWeatherError("Redis cache verisi beklenen formatta değil.")
+        return kayit[_VALUE_KEY], float(kayit[_CACHED_AT_KEY])
 
     def _redis_set(self, key: str, payload: Any) -> None:
         if not self._redis_available or self.cache_ttl_seconds <= 0:
             return
         assert self.redis_client is not None
-        serialized = json.dumps(payload, ensure_ascii=False)
+        kayit = {_CACHED_AT_KEY: time.time(), _VALUE_KEY: payload}
+        serialized = json.dumps(kayit, ensure_ascii=False)
+        # SWR aktifken kayanın erken silinmemesi için TTL + SWR penceresi kadar tut
+        omur = self._cache_omru()
 
         self._redis_islem(
             lambda: self.redis_client.setex(
-                self._redis_key(key), self.cache_ttl_seconds, serialized
+                self._redis_key(key), omur, serialized
             ),
             "Redis cache yazma hatası",
         )
@@ -346,9 +459,7 @@ class MGMWeather:
             "olcumZamani": kayit.get("veriZamani"),
         }
 
-
     # Günlük tahmin (5 günlük)
-
     def gunluk_tahmin(self, istasyon_id: int | str) -> list[dict[str, Any]]:
         """Bir istasyon için 5 günlük tahmini gün gün liste olarak döndürür."""
         data = self._get("tahminler/gunluk", {"istno": istasyon_id})
