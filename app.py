@@ -28,6 +28,8 @@ Uç noktalar:
 
 from __future__ import annotations
 
+import os
+
 from flask import Flask, jsonify, request
 
 from mgm_client import MGMWeather, MGMWeatherError
@@ -94,4 +96,28 @@ def not_found(_exc):
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    host = os.getenv("APP_HOST", "127.0.0.1")
+    port = int(os.getenv("APP_PORT", "5000"))
+    server = os.getenv("APP_SERVER", "waitress").strip().lower()
+
+    if server == "waitress":
+        try:
+            from waitress import serve
+        except ImportError as exc:
+            raise RuntimeError(
+                "Waitress kurulu değil. `pip install -r requirements.txt` çalıştırın "
+                "veya geçici olarak `APP_SERVER=flask` ile başlatın."
+            ) from exc
+        serve(app, host=host, port=port)
+    elif server == "flask":
+        debug = os.getenv("FLASK_DEBUG", "1").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        app.run(host=host, port=port, debug=debug)
+    else:
+        raise RuntimeError(
+            f"Geçersiz APP_SERVER değeri: '{server}'. Geçerli değerler: waitress, flask."
+        )

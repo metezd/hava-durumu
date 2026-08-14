@@ -16,7 +16,15 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Sunucu `http://127.0.0.1:5000` üzerinde çalışmaya başlar
+Sunucu varsayılan olarak `waitress` ile `http://127.0.0.1:5000` üzerinde çalışır.
+
+Geliştirici sunucusuyla (Flask debug) çalıştırmak için:
+
+```powershell
+$env:APP_SERVER="flask"; $env:FLASK_DEBUG="1"; python app.py
+```
+
+Not: Flask'ın kendi sunucusu geliştirme içindir; production kullanımında `waitress` (varsayılan) tercih edilir.
 
 | Uç noktalar | Açıklama |
 |---|---|
