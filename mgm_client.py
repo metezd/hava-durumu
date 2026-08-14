@@ -17,7 +17,11 @@ Kullanım:
 
 from __future__ import annotations
 
+import copy
 import datetime as _dt
+import json
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -65,7 +69,7 @@ _TR_MAP = str.maketrans("ıİüÜğĞşŞöÖçÇ", "iIuUgGsSoOcC")
 
 
 def _tr_normalize(text: str) -> str:
-    """Şehir/ilçe adlarını MGM servisinin beklediği sadeleştirilmiş forma çevirir."""
+    """Şehir ve ilçe adlarını MGM servisinin beklediği sadeleştirilmiş forma çevirir."""
     return text.translate(_TR_MAP).lower().strip()
 
 
@@ -76,7 +80,11 @@ class MGMWeather:
     timeout: int = 10
     retry_total: int = 3
     retry_backoff: float = 0.3
+    cache_ttl_seconds: int = 60
+    cache_max_entries: int = 512
     session: requests.Session = field(default_factory=requests.Session)
+    _cache: dict[str, tuple[float, Any]] = field(default_factory=dict, init=False)
+    _cache_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     BASE_URL = "https://servis.mgm.gov.tr/web"
     SUNRISE_URL = "https://api.sunrise-sunset.org/json"
@@ -109,6 +117,11 @@ class MGMWeather:
 
     # Düşük seviye yardımcılar
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        cache_key = self._cache_key(path, params)
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+
         url = f"{self.BASE_URL}/{path}"
         try:
             resp = self.session.get(
@@ -123,11 +136,41 @@ class MGMWeather:
                 f"({url})"
             )
         try:
-            return resp.json()
+            data = resp.json()
         except ValueError as exc:
             raise MGMWeatherError(
                 f"MGM servisinden geçerli JSON alınamadı ({url})"
             ) from exc
+        self._cache_set(cache_key, data)
+        return data
+
+    def _cache_key(self, path: str, params: dict[str, Any] | None = None) -> str:
+        serialized = json.dumps(params or {}, sort_keys=True, ensure_ascii=False)
+        return f"{path}?{serialized}"
+
+    def _cache_get(self, key: str) -> Any | None:
+        if self.cache_ttl_seconds <= 0:
+            return None
+        now = time.monotonic()
+        with self._cache_lock:
+            entry = self._cache.get(key)
+            if entry is None:
+                return None
+            expires_at, payload = entry
+            if expires_at <= now:
+                del self._cache[key]
+                return None
+            return copy.deepcopy(payload)
+
+    def _cache_set(self, key: str, payload: Any) -> None:
+        if self.cache_ttl_seconds <= 0:
+            return
+        expires_at = time.monotonic() + self.cache_ttl_seconds
+        with self._cache_lock:
+            if len(self._cache) >= self.cache_max_entries:
+                oldest_key = min(self._cache.items(), key=lambda item: item[1][0])[0]
+                del self._cache[oldest_key]
+            self._cache[key] = (expires_at, copy.deepcopy(payload))
 
     def il_istasyonlari(self, il: str) -> list[dict[str, Any]]:
         """
@@ -223,7 +266,7 @@ class MGMWeather:
         data = self._get("tahminler/saatlik", {"istno": istasyon_id})
         return data or []
 
-    # Gün doğumu / batımı (sunrise-sunset.org üzerinden)
+    # Gün doğumu ve batımı (sunrise-sunset.org üzerinden)
     def gun_dogumu_batimi(self, enlem: float, boylam: float) -> dict[str, str]:
         try:
             resp = self.session.get(

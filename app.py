@@ -39,7 +39,10 @@ mgm = MGMWeather(
     timeout=int(os.getenv("MGM_TIMEOUT", "10")),
     retry_total=int(os.getenv("MGM_RETRY_TOTAL", "3")),
     retry_backoff=float(os.getenv("MGM_RETRY_BACKOFF", "0.3")),
+    cache_ttl_seconds=int(os.getenv("MGM_CACHE_TTL", "60")),
+    cache_max_entries=int(os.getenv("MGM_CACHE_MAX_ENTRIES", "512")),
 )
+CORS_ALLOW_ORIGIN = os.getenv("APP_CORS_ALLOW_ORIGIN", "*")
 
 
 def _hata_yanit(exc: Exception, kod: int = 502):
@@ -52,6 +55,19 @@ def _istasyon_id_getir(il: str, ilce: str | None) -> int | str:
     if istasyon_id is None:
         raise MGMWeatherError(f"'{il}' için geçerli istasyon kimliği bulunamadı.")
     return istasyon_id
+
+
+@app.after_request
+def guvenlik_ve_cors_headerlari(response):
+    response.headers["Access-Control-Allow-Origin"] = CORS_ALLOW_ORIGIN
+    response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none';"
+    return response
 
 
 @app.get("/istasyonlar/<il>")

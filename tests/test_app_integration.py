@@ -60,6 +60,14 @@ class TestAppIntegration(unittest.TestCase):
         self.assertTrue(data["basarili"])
         self.assertEqual(data["veri"]["ilce"], "Bakirkoy")
 
+    def test_cors_ve_guvenlik_headerlari(self):
+        resp = self.client.get("/health")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "*")
+        self.assertEqual(resp.headers.get("X-Content-Type-Options"), "nosniff")
+        self.assertEqual(resp.headers.get("X-Frame-Options"), "DENY")
+        self.assertEqual(resp.headers.get("Referrer-Policy"), "no-referrer")
+
 
 if __name__ == "__main__":
     unittest.main()

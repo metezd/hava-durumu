@@ -41,6 +41,13 @@ MGM isteklerinde timeout/retry ayarları ortam değişkeniyle yönetilir:
 - `MGM_TIMEOUT` (varsayılan: `10`)
 - `MGM_RETRY_TOTAL` (varsayılan: `3`)
 - `MGM_RETRY_BACKOFF` (varsayılan: `0.3`)
+- `MGM_CACHE_TTL` (varsayılan: `60`, saniye)
+- `MGM_CACHE_MAX_ENTRIES` (varsayılan: `512`)
+
+CORS ve güvenlik ayarları:
+
+- `APP_CORS_ALLOW_ORIGIN` (varsayılan: `*`)
+- Yanıtlarda otomatik güvenlik header'ları döner (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `CSP`).
 
 ## Örnek
 
@@ -80,4 +87,11 @@ curl "http://127.0.0.1:5000/hava-durumu/Istanbul?ilce=Bakirkoy"
 
 ```bash
 python -m unittest discover -s tests -v
+```
+
+## Docker
+
+```bash
+docker build -t hava-durumu .
+docker run --rm -p 5000:5000 hava-durumu
 ```
