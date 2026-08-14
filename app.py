@@ -34,7 +34,7 @@ from collections import defaultdict, deque
 
 from flask import Flask, jsonify, request
 
-from mgm_client import MGMWeather, MGMWeatherError
+from mgm_client import MGMWeather, MGMWeatherError, turkiye_illeri
 
 app = Flask(__name__)
 mgm = MGMWeather(
@@ -112,6 +112,11 @@ def guvenlik_ve_cors_headerlari(response):
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none';"
     return response
+
+
+@app.get("/iller")
+def iller():
+    return jsonify({"basarili": True, "veri": turkiye_illeri()})
 
 
 @app.get("/istasyonlar/<il>")

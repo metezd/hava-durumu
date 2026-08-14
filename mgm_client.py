@@ -47,7 +47,7 @@ _VALUE_KEY = "_value"
 # olarak 30 sn içinde 5 hata) devre açılır ve bu süre boyunca MGM'ye hiç
 # istek atılmadan doğrudan hata dönülür. Cache/Redis (SWR) katmanı ayrı
 # çalışır: elde stale veri varsa breaker açıkken bile o veri kullanıcıya
-# dönmeye devam eder sadece asıl ağ isteği atlanır
+# dönmeye devam eder, sadece asıl ağ isteği atlanır.
 CIRCUIT_BREAKER_FAILURE_THRESHOLD = 5
 CIRCUIT_BREAKER_WINDOW_SECONDS = 30.0
 CIRCUIT_BREAKER_OPEN_SECONDS = 60.0
@@ -73,10 +73,10 @@ class _CircuitBreaker:
     - **Kapalı**: her istek MGM'ye normal şekilde gider.
     - Pencere (`window_seconds`) içinde `failure_threshold` sayıda hata
       birikirse devre **açılır**: `open_seconds` boyunca hiçbir istek MGM'ye
-      gitmez direkt `MGMWeatherError` fırlatılır.
+      gitmez, doğrudan `MGMWeatherError` fırlatılır.
     - `open_seconds` dolunca devre **yarı açık** olur: tek bir deneme
       isteğine izin verilir. Başarılı olursa devre kapanır ve sayaçlar
-      sıfırlanır; başarısız olursa devre tekrar `open_seconds` için açılır.
+      sıfırlanır ve başarısız olursa devre tekrar `open_seconds` için açılır.
 
     Thread-safe'tir; birden çok iş parçacığı aynı anda `basarisiz()` /
     `izin_var_mi()` çağırabilir.
@@ -184,6 +184,104 @@ _TR_MAP = str.maketrans("ıİüÜğĞşŞöÖçÇ", "iIuUgGsSoOcC")
 def _tr_normalize(text: str) -> str:
     """Şehir ve ilçe adlarını MGM servisinin beklediği sadeleştirilmiş forma çevirir."""
     return text.translate(_TR_MAP).lower().strip()
+
+
+# Türkiye'nin 81 ili, resmi plaka kodu sırasıyla. Bu liste MGM'den değil
+# sabit/bilinen veriden gelir: il sayısı/sınırları pratikte değişmediği için
+# her istekte MGM'ye sormaya (ayrı bir cache/breaker mekanizmasına) gerek
+# yoktur. `GET /iller` doğrudan bu sabitten döner.
+TURKIYE_ILLERI: list[dict[str, Any]] = [
+    {"plakaKodu": 1, "il": "Adana"},
+    {"plakaKodu": 2, "il": "Adıyaman"},
+    {"plakaKodu": 3, "il": "Afyonkarahisar"},
+    {"plakaKodu": 4, "il": "Ağrı"},
+    {"plakaKodu": 5, "il": "Amasya"},
+    {"plakaKodu": 6, "il": "Ankara"},
+    {"plakaKodu": 7, "il": "Antalya"},
+    {"plakaKodu": 8, "il": "Artvin"},
+    {"plakaKodu": 9, "il": "Aydın"},
+    {"plakaKodu": 10, "il": "Balıkesir"},
+    {"plakaKodu": 11, "il": "Bilecik"},
+    {"plakaKodu": 12, "il": "Bingöl"},
+    {"plakaKodu": 13, "il": "Bitlis"},
+    {"plakaKodu": 14, "il": "Bolu"},
+    {"plakaKodu": 15, "il": "Burdur"},
+    {"plakaKodu": 16, "il": "Bursa"},
+    {"plakaKodu": 17, "il": "Çanakkale"},
+    {"plakaKodu": 18, "il": "Çankırı"},
+    {"plakaKodu": 19, "il": "Çorum"},
+    {"plakaKodu": 20, "il": "Denizli"},
+    {"plakaKodu": 21, "il": "Diyarbakır"},
+    {"plakaKodu": 22, "il": "Edirne"},
+    {"plakaKodu": 23, "il": "Elazığ"},
+    {"plakaKodu": 24, "il": "Erzincan"},
+    {"plakaKodu": 25, "il": "Erzurum"},
+    {"plakaKodu": 26, "il": "Eskişehir"},
+    {"plakaKodu": 27, "il": "Gaziantep"},
+    {"plakaKodu": 28, "il": "Giresun"},
+    {"plakaKodu": 29, "il": "Gümüşhane"},
+    {"plakaKodu": 30, "il": "Hakkâri"},
+    {"plakaKodu": 31, "il": "Hatay"},
+    {"plakaKodu": 32, "il": "Isparta"},
+    {"plakaKodu": 33, "il": "Mersin"},
+    {"plakaKodu": 34, "il": "İstanbul"},
+    {"plakaKodu": 35, "il": "İzmir"},
+    {"plakaKodu": 36, "il": "Kars"},
+    {"plakaKodu": 37, "il": "Kastamonu"},
+    {"plakaKodu": 38, "il": "Kayseri"},
+    {"plakaKodu": 39, "il": "Kırklareli"},
+    {"plakaKodu": 40, "il": "Kırşehir"},
+    {"plakaKodu": 41, "il": "Kocaeli"},
+    {"plakaKodu": 42, "il": "Konya"},
+    {"plakaKodu": 43, "il": "Kütahya"},
+    {"plakaKodu": 44, "il": "Malatya"},
+    {"plakaKodu": 45, "il": "Manisa"},
+    {"plakaKodu": 46, "il": "Kahramanmaraş"},
+    {"plakaKodu": 47, "il": "Mardin"},
+    {"plakaKodu": 48, "il": "Muğla"},
+    {"plakaKodu": 49, "il": "Muş"},
+    {"plakaKodu": 50, "il": "Nevşehir"},
+    {"plakaKodu": 51, "il": "Niğde"},
+    {"plakaKodu": 52, "il": "Ordu"},
+    {"plakaKodu": 53, "il": "Rize"},
+    {"plakaKodu": 54, "il": "Sakarya"},
+    {"plakaKodu": 55, "il": "Samsun"},
+    {"plakaKodu": 56, "il": "Siirt"},
+    {"plakaKodu": 57, "il": "Sinop"},
+    {"plakaKodu": 58, "il": "Sivas"},
+    {"plakaKodu": 59, "il": "Tekirdağ"},
+    {"plakaKodu": 60, "il": "Tokat"},
+    {"plakaKodu": 61, "il": "Trabzon"},
+    {"plakaKodu": 62, "il": "Tunceli"},
+    {"plakaKodu": 63, "il": "Şanlıurfa"},
+    {"plakaKodu": 64, "il": "Uşak"},
+    {"plakaKodu": 65, "il": "Van"},
+    {"plakaKodu": 66, "il": "Yozgat"},
+    {"plakaKodu": 67, "il": "Zonguldak"},
+    {"plakaKodu": 68, "il": "Aksaray"},
+    {"plakaKodu": 69, "il": "Bayburt"},
+    {"plakaKodu": 70, "il": "Karaman"},
+    {"plakaKodu": 71, "il": "Kırıkkale"},
+    {"plakaKodu": 72, "il": "Batman"},
+    {"plakaKodu": 73, "il": "Şırnak"},
+    {"plakaKodu": 74, "il": "Bartın"},
+    {"plakaKodu": 75, "il": "Ardahan"},
+    {"plakaKodu": 76, "il": "Iğdır"},
+    {"plakaKodu": 77, "il": "Yalova"},
+    {"plakaKodu": 78, "il": "Karabük"},
+    {"plakaKodu": 79, "il": "Kilis"},
+    {"plakaKodu": 80, "il": "Osmaniye"},
+    {"plakaKodu": 81, "il": "Düzce"},
+]
+
+
+def turkiye_illeri() -> list[dict[str, Any]]:
+    """Türkiye'nin 81 ilini plaka kodu sırasıyla döndürür.
+
+    Sabit veridir; MGM'ye istek atmaz. Çağıranın listeyi kazara mutasyona
+    uğratmaması için her çağrıda yeni bir kopya döner.
+    """
+    return copy.deepcopy(TURKIYE_ILLERI)
 
 
 @dataclass

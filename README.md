@@ -29,6 +29,7 @@ Not: Flask'ın kendi sunucusu geliştirme içindir; production kullanımında `w
 | Uç noktalar | Açıklama |
 |---|---|
 | `GET /health` | Servis durumu (`?deep=1` ile MGM + Redis bağlantısı da kontrol edilir) |
+| `GET /iller` | Türkiye'nin 81 ilini plaka kodu sırasıyla listeler (sabit veri, MGM'ye istek atmaz) |
 | `GET /istasyonlar/<il>` | O ildeki istasyonları (ilçeleri) listeler |
 | `GET /guncel/<il>?ilce=<ilce>` | Anlık hava durumu |
 | `GET /tahmin/<il>?ilce=<ilce>` | 5 günlük tahmin |

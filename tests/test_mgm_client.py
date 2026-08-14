@@ -4,7 +4,7 @@ import unittest
 
 import requests
 
-from mgm_client import MGMCircuitOpenError, MGMWeather, MGMWeatherError, _tr_normalize
+from mgm_client import MGMCircuitOpenError, MGMWeather, MGMWeatherError, _tr_normalize, turkiye_illeri
 
 
 class _DummyResponse:
@@ -33,6 +33,20 @@ class TestMGMClientUnit(unittest.TestCase):
     def test_tr_normalize_ascii_cevirir(self):
         self.assertEqual(_tr_normalize("İstanbul"), "istanbul")
         self.assertEqual(_tr_normalize(" Üsküdar "), "uskudar")
+
+    def test_turkiye_illeri_81_il_plaka_kodu_sirali(self):
+        illeri = turkiye_illeri()
+        self.assertEqual(len(illeri), 81)
+        plaka_kodlari = [kayit["plakaKodu"] for kayit in illeri]
+        self.assertEqual(plaka_kodlari, list(range(1, 82)))
+        self.assertEqual(illeri[0]["il"], "Adana")
+        self.assertEqual(illeri[33]["il"], "İstanbul")
+
+    def test_turkiye_illeri_kopya_doner(self):
+        ilk = turkiye_illeri()
+        ilk[0]["il"] = "DEĞİŞTİRİLDİ"
+        ikinci = turkiye_illeri()
+        self.assertEqual(ikinci[0]["il"], "Adana")
 
     def test_retry_ayarlari_sessiona_uygulanir(self):
         client = MGMWeather(timeout=7, retry_total=4, retry_backoff=0.5)

@@ -106,6 +106,24 @@ class TestAppIntegration(unittest.TestCase):
         data = resp.get_json()
         self.assertEqual(data["circuit_breaker"], "yari-acik")
 
+    def test_iller_endpoint_81_il_doner(self):
+        resp = self.client.get("/iller")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data["basarili"])
+        self.assertEqual(len(data["veri"]), 81)
+        self.assertEqual(data["veri"][0], {"plakaKodu": 1, "il": "Adana"})
+        self.assertEqual(data["veri"][33], {"plakaKodu": 34, "il": "İstanbul"})
+        self.assertEqual(data["veri"][-1], {"plakaKodu": 81, "il": "Düzce"})
+
+    def test_iller_endpoint_mgm_ye_istek_atmaz(self):
+        # FakeMGM'de il_istasyonlari çağrılırsa should_fail_health true iken
+        # hata gönderir /iller bu metodu hiç çağırmadığı için 200 dönmeli
+        app_module.mgm = FakeMGM(should_fail_health=True)
+        resp = self.client.get("/iller")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.get_json()["veri"]), 81)
+
     def test_hava_durumu_endpoint(self):
         resp = self.client.get("/hava-durumu/Istanbul?ilce=Bakirkoy")
         self.assertEqual(resp.status_code, 200)
