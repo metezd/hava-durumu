@@ -26,6 +26,24 @@ $env:APP_SERVER="flask"; $env:FLASK_DEBUG="1"; python app.py
 
 Not: Flask'ın kendi sunucusu geliştirme içindir; production kullanımında `waitress` (varsayılan) tercih edilir.
 
+## Docker ile çalıştırma
+
+```bash
+cp .env.example .env   # değerler düzenlenebilir, boşsa varsayılanlar geçerlidir
+docker compose up --build
+```
+
+Bu komut `redis:7-alpine` konteynerini ve uygulamayı ayağa kaldırır; `MGM_REDIS_URL` otomatik olarak bundled Redis'e (`redis://redis:6379/0`) işaret eder `.env` yoksa da çalışır ve tüm ayarlar `docker-compose.yml`'dekilerle devam eder.
+
+Sadece uygulamayı çalıştırmak için:
+
+```bash
+docker build -t hava-durumu .
+docker run -p 5000:5000 hava-durumu
+```
+
+Container'ın `/health` uç noktasını kullanan bir `HEALTHCHECK`'i var `docker ps` çıktısında `healthy`/`unhealthy` olarak görünür.
+
 | Uç noktalar | Açıklama |
 |---|---|
 | `GET /health` | Servis durumu (`?deep=1` ile MGM + Redis bağlantısı da kontrol edilir) |
@@ -48,7 +66,7 @@ Uygulama yanında opsiyonel bir Redis veya [Redis Stack](https://redis.io/docs/l
 MGM_REDIS_URL="redis://localhost:6379/0" python app.py
 ```
 
-Redis'e bağlanılamazsa uygulama hata verip durur; uygulamayı Redis olmadan kullanmak istiyorsanız değişkeni set etmeyin — bu durumda in-memory cache devreye girer.
+Redis'e bağlanılamazsa uygulama hata verip durur; uygulamayı Redis olmadan kullanmak istiyorsanız değişkeni set etmeyin, bu durumda in-memory cache devreye girer. (`docker compose up` kullanıyorsanız bu adımlarla uğraşmanıza gerek yok, Redis servisi ve `MGM_REDIS_URL` otomatik ayarlanır, bkz. Docker ile çalıştırma)
 
 MGM isteklerinde timeout/retry/cache ayarları ortam değişkeniyle yönetilir:
 

@@ -1,0 +1,32 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    # Sadece cache olarak kullanılıyor kalıcılık istemiyorsak volume
+    # bağlamaya gerek yok. Konteyner yeniden başlarsa cache boşalır,
+    # uygulama MGM'den taze veri çeker
+
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-5000}:5000"
+    env_file:
+      # .env yoksa hata vermeden devam eder; tüm ayarlar aşağıdaki
+      # environment bloğundaki varsayılanlarla çalışır
+      - path: .env
+        required: false
+    environment:
+      # Bu servis Redis'i bu compose dosyasındaki `redis` servisinden
+      # kullanır. .env'de veya kabukta MGM_REDIS_URL set edilirse o
+      # değer geçerli olur
+      MGM_REDIS_URL: ${MGM_REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      redis:
+        condition: service_healthy
