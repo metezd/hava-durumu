@@ -23,7 +23,7 @@ Uç noktalar:
         -> Güncel durum + tahmin + gün doğumu ve batımı
 
 Örnek:
-    curl "http://127.0.0.1:5000/hava-durumu/Istanbul?ilce=Kadikoy"
+    curl "http://127.0.0.1:5000/hava-durumu/Istanbul?ilce=Bakirkoy"
 """
 
 from __future__ import annotations

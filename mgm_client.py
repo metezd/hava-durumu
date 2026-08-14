@@ -88,9 +88,7 @@ class MGMWeather:
         "Referer": "https://www.mgm.gov.tr/",
     }
 
-    # ------------------------------------------------------------------ #
     # Düşük seviye yardımcılar
-    # ------------------------------------------------------------------ #
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         url = f"{self.BASE_URL}/{path}"
         try:
@@ -112,9 +110,6 @@ class MGMWeather:
                 f"MGM servisinden geçerli JSON alınamadı ({url})"
             ) from exc
 
-    # ------------------------------------------------------------------ #
-    # İstasyon / konum arama
-    # ------------------------------------------------------------------ #
     def il_istasyonlari(self, il: str) -> list[dict[str, Any]]:
         """
         Bir il adına göre o ildeki tüm MGM istasyonlarını (merkezleri) döndürür.
@@ -139,9 +134,7 @@ class MGMWeather:
             raise MGMWeatherError(f"'{il}' ilinde '{ilce}' ilçesi bulunamadı.")
         return istasyonlar[0]
 
-    # ------------------------------------------------------------------ #
     # Güncel durum
-    # ------------------------------------------------------------------ #
     def guncel_durum(self, istasyon_id: int | str) -> dict[str, Any]:
         """Bir istasyon için anlık (güncel) hava durumu verisini döndürür."""
         data = self._get("sondurumlar", {"merkezid": istasyon_id})
@@ -164,9 +157,9 @@ class MGMWeather:
             "olcumZamani": kayit.get("veriZamani"),
         }
 
-    # ------------------------------------------------------------------ #
+
     # Günlük tahmin (5 günlük)
-    # ------------------------------------------------------------------ #
+
     def gunluk_tahmin(self, istasyon_id: int | str) -> list[dict[str, Any]]:
         """Bir istasyon için 5 günlük tahmini gün gün liste olarak döndürür."""
         data = self._get("tahminler/gunluk", {"istno": istasyon_id})
@@ -193,17 +186,13 @@ class MGMWeather:
             )
         return sonuc
 
-    # ------------------------------------------------------------------ #
     # Saatlik tahmin
-    # ------------------------------------------------------------------ #
     def saatlik_tahmin(self, istasyon_id: int | str) -> list[dict[str, Any]]:
         """Bir istasyon için saatlik tahmin verisini döndürür (mevcutsa)."""
         data = self._get("tahminler/saatlik", {"istno": istasyon_id})
         return data or []
 
-    # ------------------------------------------------------------------ #
     # Gün doğumu / batımı (sunrise-sunset.org üzerinden)
-    # ------------------------------------------------------------------ #
     def gun_dogumu_batimi(self, enlem: float, boylam: float) -> dict[str, str]:
         try:
             resp = self.session.get(
@@ -216,7 +205,7 @@ class MGMWeather:
         except (requests.RequestException, KeyError, ValueError) as exc:
             raise MGMWeatherError(f"Gün doğumu/batımı verisi alınamadı: {exc}") from exc
 
-        tz = _dt.timezone(_dt.timedelta(hours=3))  # TR saati (UTC+3)
+        tz = _dt.timezone(_dt.timedelta(hours=3))  # Bizim saat (UTC+3)
         dogum = _dt.datetime.fromisoformat(sonuc["sunrise"]).astimezone(tz)
         batim = _dt.datetime.fromisoformat(sonuc["sunset"]).astimezone(tz)
         return {"gunDogumu": dogum.strftime("%H:%M"), "gunBatimi": batim.strftime("%H:%M")}
