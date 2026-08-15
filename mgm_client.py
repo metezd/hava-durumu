@@ -178,6 +178,41 @@ CONDITION_CODES: dict[str, str] = {
     "KGY": "Kuvvetli Gökgürültülü Sağanak Yağışlı",
 }
 
+# Open-Meteo WMO hava durumu kodları (https://open-meteo.com/en/docs — "WMO
+# Weather interpretation codes"). MGM'nin kendi CONDITION_CODES'undan (string
+# anahtarlı) tamamen ayrı bir kod uzayı — karıştırılmasın diye ayrı bir
+# sözlükte tutuluyor. Sadece fallback (Open-Meteo) yanıtlarında kullanılır.
+WMO_CONDITION_CODES: dict[int, str] = {
+    0: "Açık",
+    1: "Genel Olarak Açık",
+    2: "Parçalı Bulutlu",
+    3: "Çok Bulutlu",
+    45: "Sisli",
+    48: "Kırağı Sisi",
+    51: "Hafif Çisenti",
+    53: "Çisenti",
+    55: "Yoğun Çisenti",
+    56: "Hafif Donan Çisenti",
+    57: "Yoğun Donan Çisenti",
+    61: "Hafif Yağmurlu",
+    63: "Yağmurlu",
+    65: "Şiddetli Yağmurlu",
+    66: "Hafif Donan Yağmur",
+    67: "Şiddetli Donan Yağmur",
+    71: "Hafif Kar Yağışlı",
+    73: "Kar Yağışlı",
+    75: "Yoğun Kar Yağışlı",
+    77: "Kar Taneli",
+    80: "Hafif Sağanak",
+    81: "Sağanak",
+    82: "Şiddetli Sağanak",
+    85: "Hafif Kar Sağanağı",
+    86: "Yoğun Kar Sağanağı",
+    95: "Gök Gürültülü Fırtına",
+    96: "Dolu ile Gök Gürültülü Fırtına",
+    99: "Şiddetli Dolu ile Gök Gürültülü Fırtına",
+}
+
 _TR_MAP = str.maketrans("ıİüÜğĞşŞöÖçÇ", "iIuUgGsSoOcC")
 
 
@@ -315,6 +350,7 @@ class MGMWeather:
 
     BASE_URL = "https://servis.mgm.gov.tr/web"
     SUNRISE_URL = "https://api.sunrise-sunset.org/json"
+    OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
     HEADERS = {
         "Host": "servis.mgm.gov.tr",
@@ -750,6 +786,94 @@ class MGMWeather:
             "olcumZamani": kayit.get("veriZamani"),
         }
 
+    def _open_meteo_guncel_durum(self, enlem: float, boylam: float) -> dict[str, Any]:
+        """
+        MGM'ye ulaşılamadığında (circuit breaker açık ya da MGM hata verdi)
+        kullanılan yedek kaynak. Open-Meteo key gerektirmeyen, ücretsiz bir
+        hava durumu API'sidir (bkz. https://open-meteo.com). Alan adları
+        MGM'ninkiyle birebir aynı tutulur ki tüketici tarafında ayrı bir
+        dallanma gerekmesin; `guncel_durum_yedekli` çağrısı yanıta hangi
+        kaynaktan geldiğini belirten bir `kaynak` alanı ekler.
+
+        Kapsam bilinçli olarak dar tutuldu: yalnızca anlık durum için
+        fallback var, 5 günlük/saatlik tahmin için yok (bkz.
+        docs/resilience.md).
+        """
+        params = {
+            "latitude": enlem,
+            "longitude": boylam,
+            "current": (
+                "temperature_2m,relative_humidity_2m,wind_speed_10m,"
+                "wind_direction_10m,surface_pressure,pressure_msl,weather_code"
+            ),
+            "timezone": "Europe/Istanbul",
+        }
+        cache_key = self._cache_key("open-meteo-guncel", params)
+
+        def loader() -> dict[str, Any]:
+            try:
+                resp = self.session.get(
+                    self.OPEN_METEO_URL, params=params, timeout=self.timeout
+                )
+                resp.raise_for_status()
+                veri = resp.json()["current"]
+            except (requests.RequestException, KeyError, ValueError) as exc:
+                raise MGMWeatherError(
+                    f"Open-Meteo yedek servisinden veri alınamadı: {exc}"
+                ) from exc
+
+            kod = veri.get("weather_code")
+            return {
+                "sicaklik": veri.get("temperature_2m"),
+                "nem": veri.get("relative_humidity_2m"),
+                "ruzgarHizi": veri.get("wind_speed_10m"),
+                "ruzgarYonu": veri.get("wind_direction_10m"),
+                "basinc": veri.get("surface_pressure"),
+                "denizSeviyesiBasinc": veri.get("pressure_msl"),
+                "durumKodu": kod,
+                "durum": WMO_CONDITION_CODES.get(kod, kod),
+                "olcumZamani": veri.get("time"),
+            }
+
+        return self._cached_get(cache_key, loader)
+
+    def guncel_durum_yedekli(
+        self,
+        istasyon_id: int | str,
+        enlem: float | None = None,
+        boylam: float | None = None,
+    ) -> dict[str, Any]:
+        """
+        guncel_durum()'u dener; MGM hata verirse (circuit breaker açık dahil)
+        ve enlem/boylam biliniyorsa Open-Meteo'ya düşer. Döndürülen sözlükte
+        her zaman bir `kaynak` alanı olur: "mgm" ya da "open-meteo" — hangi
+        servisten geldiği tüketici tarafında hep belli olsun diye.
+
+        Not: il/ilçe → istasyon çözümlemesi (enlem/boylam'ın kendisi) de
+        MGM'den geliyor; MGM'nin istasyon listesi ("merkezler") ile anlık
+        durum ("sondurumlar") uçları ayrı cache/SWR girdileri kullandığından
+        genelde biri çökükken diğeri hâlâ cache'te taze olur, ama ikisi de
+        aynı anda ve hiç cache'siz düşerse (soğuk anahtar + tam MGM kesintisi)
+        enlem/boylam da elde olmayacağından bu fallback devreye giremez.
+        """
+        try:
+            veri = self.guncel_durum(istasyon_id)
+            veri["kaynak"] = "mgm"
+            return veri
+        except MGMWeatherError as mgm_hata:
+            if enlem is None or boylam is None:
+                raise
+            try:
+                veri = self._open_meteo_guncel_durum(enlem, boylam)
+            except MGMWeatherError as om_hata:
+                raise MGMWeatherError(
+                    "MGM ve Open-Meteo (yedek) servislerinin ikisinden de "
+                    f"veri alınamadı. MGM: {mgm_hata} | Open-Meteo: {om_hata}"
+                ) from om_hata
+            veri["istasyonId"] = istasyon_id
+            veri["kaynak"] = "open-meteo"
+            return veri
+
     # Günlük tahmin (5 günlük)
     def gunluk_tahmin(self, istasyon_id: int | str) -> list[dict[str, Any]]:
         """Bir istasyon için 5 günlük tahmini gün gün liste olarak döndürür."""
@@ -825,8 +949,16 @@ class MGMWeather:
             "enlem": istasyon.get("enlem") or istasyon.get("lat"),
             "boylam": istasyon.get("boylam") or istasyon.get("lon"),
         }
-        sonuc["guncel"] = self.guncel_durum(istasyon_id)
-        sonuc["tahmin"] = self.gunluk_tahmin(istasyon_id)
+        sonuc["guncel"] = self.guncel_durum_yedekli(istasyon_id, sonuc["enlem"], sonuc["boylam"])
+
+        # Tahmin için fallback yok (bilinçli kapsam dışı, bkz.
+        # guncel_durum_yedekli docstring'i) ama MGM çökükken en azından
+        # "guncel" alanının (fallback ile) döndüğü bir yanıtı MGM'nin
+        # tahmin uç noktası tek başına çökertmesin diye tolere ediyoruz.
+        try:
+            sonuc["tahmin"] = self.gunluk_tahmin(istasyon_id)
+        except MGMWeatherError:
+            sonuc["tahmin"] = []
 
         try:
             if sonuc["enlem"] and sonuc["boylam"]:

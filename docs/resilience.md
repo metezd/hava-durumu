@@ -60,6 +60,38 @@ döner — retry/backoff süresi boyunca beklemez.
 Durum `GET /health` (hem shallow hem `?deep=1`) yanıtında `circuit_breaker`
 alanıyla görülebilir: `kapali` | `acik` | `yari-acik`.
 
+## Open-Meteo fallback (yalnızca anlık durum)
+
+Circuit breaker + SWR, MGM'nin kısa süreli hatalarını büyük
+ölçüde yutar ama cache'te hiç veri olmayan bir anahtarda
+tam MGM kesintisi sırasında yine de elde bir şey kalmaz. 
+Bu durumda `GET /guncel` ve `GET /hava-durumu` uçları key
+gerektirmeyen ücretsiz bir servis olan [Open-Meteo](https://open-meteo.com)'ya
+düşer.
+
+Kapsam bilinçli olarak dar: sadece anlık durum için fallback var; 5
+günlük ve saatlik tahmin için yok. `/hava-durumu` MGM tamamen
+çökükken bile 200 dönmeye devam eder `tahmin` alanı bu durumda boş liste
+olur, `guncel` alanı Open-Meteo'dan gelir.
+
+Yanıtta hangi kaynaktan geldiği her zaman açık:
+
+```json
+{ "kaynak": "mgm" }     // normal
+{ "kaynak": "open-meteo" }  // MGM'ye ulaşılamadı, yedek devrede
+```
+
+`kaynak: "open-meteo"` iken `durumKodu`, MGM'nin değil Open-Meteo'nun WMO
+kod uzayındandır — ikisi doğrudan karşılaştırılamaz, `durum` alanındaki
+Türkçe açıklamaya bakın.
+
+Sınır: il/ilçe → istasyon çözümlemesi de MGM'den geliyor
+(`merkezler` uç noktası). MGM'nin istasyon listesi ile anlık durum ayrı
+cache girdileri kullandığından genelde biri çökükken diğeri hâlâ cache'te
+taze olur ama ikisi de aynı anda cache'siz düşerse (soğuk anahtar + tam
+MGM kesintisi) enlem/boylam da elde olmayacağından bu fallback devreye
+giremez ve orijinal MGM hatası döner.
+
 ## Tüm ortam değişkenleri
 
 **MGM istemcisi (timeout / retry):**

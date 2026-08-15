@@ -86,6 +86,22 @@ def _istasyon_id_getir(il: str, ilce: str | None) -> int | str:
     return istasyon_id
 
 
+def _istasyon_ve_konum_getir(
+    il: str, ilce: str | None
+) -> tuple[int | str, float | None, float | None]:
+    """
+    _istasyon_id_getir'e ek olarak enlem/boylam da döner
+    fallback'i (guncel_durum_yedekli) için gerekli.
+    """
+    istasyon = mgm.ilce_istasyonu(il, ilce)
+    istasyon_id = istasyon.get("istasyonId") or istasyon.get("merkezId")
+    if istasyon_id is None:
+        raise MGMWeatherError(f"'{il}' için geçerli istasyon kimliği bulunamadı.")
+    enlem = istasyon.get("enlem") or istasyon.get("lat")
+    boylam = istasyon.get("boylam") or istasyon.get("lon")
+    return istasyon_id, enlem, boylam
+
+
 @app.before_request
 def rate_limit():
     if request.method == "OPTIONS":
@@ -240,8 +256,8 @@ def health():
 def guncel(il: str):
     ilce = request.args.get("ilce")
     try:
-        istasyon_id = _istasyon_id_getir(il, ilce)
-        veri = mgm.guncel_durum(istasyon_id)
+        istasyon_id, enlem, boylam = _istasyon_ve_konum_getir(il, ilce)
+        veri = mgm.guncel_durum_yedekli(istasyon_id, enlem, boylam)
         return jsonify({"basarili": True, "veri": veri})
     except MGMWeatherError as exc:
         return _hata_yanit(exc, 404)

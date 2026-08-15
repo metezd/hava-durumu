@@ -69,13 +69,15 @@ Container'ın `/health` uç noktasını kullanan bir `HEALTHCHECK`'i var;
 | `GET /health` | Servis durumu (`?deep=1` ile MGM + Redis bağlantısı da kontrol edilir) |
 | `GET /iller` | Türkiye'nin 81 ilini listeler (sabit veri) |
 | `GET /istasyonlar/<il>` | O ildeki istasyonları (ilçeleri) listeler |
-| `GET /guncel/<il>?ilce=<ilce>` | Anlık hava durumu |
+| `GET /guncel/<il>?ilce=<ilce>` | Anlık hava durumu (MGM çökükse Open-Meteo'ya düşer) |
 | `GET /tahmin/<il>?ilce=<ilce>` | 5 günlük tahmin |
 | `GET /saatlik/<il>?ilce=<ilce>` | Saatlik tahmin |
-| `GET /hava-durumu/<il>?ilce=<ilce>` | Güncel durum + tahmin (birleşik) |
+| `GET /hava-durumu/<il>?ilce=<ilce>` | Güncel durum (fallback'li) + tahmin (birleşik) |
 
-`ilce` parametresi verilmezse ilin ilk istasyonu kullanılır. Alan bazında tam
-şema için `/docs`'a bakın.
+`ilce` parametresi verilmezse ilin ilk istasyonu kullanılır. Anlık durum
+yanıtındaki `kaynak` alanı (`mgm` | `open-meteo`) verinin nereden geldiğini
+gösterir [docs/resilience.md](docs/resilience.md#open-meteo-fallback-yalnızca-anlık-durum)
+Alan bazında şema için `/docs`'a bakın
 
 ## Örnek
 

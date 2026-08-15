@@ -1,6 +1,7 @@
 openapi: 3.0.3
 info:
   title: Hava Durumu API
+  version: "1.0.0"
   description: >
     MGM (Meteoroloji Genel Müdürlüğü) verisini kullanan ve resmi olmayan bir REST
     API. Redis destekli önbellek, stale-while-revalidate ve MGM kesintilerine
@@ -239,6 +240,12 @@ components:
 
     GuncelDurum:
       type: object
+      description: >
+        `kaynak: "mgm"` normal yanıttır. MGM'ye ulaşılamadığında (circuit
+        breaker açık dahil) `kaynak: "open-meteo"` ile ücretsiz, key
+        gerektirmeyen bir yedek servisten gelen veri döner — `durumKodu` bu
+        durumda MGM'nin değil, Open-Meteo'nun WMO kod uzayındandır, ikisi
+        karşılaştırılamaz.
       properties:
         istasyonId: { type: integer, example: 17062 }
         sicaklik: { type: number, nullable: true, example: 21.4 }
@@ -247,9 +254,17 @@ components:
         ruzgarYonu: { type: number, nullable: true, example: 180 }
         basinc: { type: number, nullable: true, example: 1013.2 }
         denizSeviyesiBasinc: { type: number, nullable: true, example: 1015.1 }
-        durumKodu: { type: integer, nullable: true, example: 1 }
+        durumKodu:
+          nullable: true
+          example: 1
+          description: "kaynak=mgm iken MGM kodu (string), kaynak=open-meteo iken WMO kodu (integer)"
         durum: { type: string, nullable: true, example: Açık }
         olcumZamani: { type: string, nullable: true, example: "2026-08-15 09:00:00" }
+        kaynak:
+          type: string
+          enum: [mgm, open-meteo]
+          example: mgm
+          description: Verinin hangi servisten geldiği.
 
     GunlukTahmin:
       type: object

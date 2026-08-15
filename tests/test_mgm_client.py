@@ -415,5 +415,131 @@ class TestCircuitBreaker(unittest.TestCase):
         self.assertEqual(ucuncu, eski_yuk)  # devre açık: hâlâ eski veri
 
 
+class _UrlBazliSession:
+    """URL'nin içerdiği alt path'e göre farklı davranan sahte session —
+    MGM/Open-Meteo fallback senaryolarını (aynı istek zincirinde bazı
+    uçların başarılı, bazılarının başarısız olması) test etmek için."""
+
+    def __init__(self, davranislar):
+        # davranislar: {url_parcasi: yük_sözlüğü_veya_Exception}
+        self.davranislar = davranislar
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append(url)
+        for parca, davranis in self.davranislar.items():
+            if parca in url:
+                if isinstance(davranis, Exception):
+                    raise davranis
+                return _DummyResponse(davranis)
+        raise AssertionError(f"Beklenmeyen URL çağrıldı: {url}")
+
+
+def _open_meteo_basarili_yuk(sicaklik=21.4):
+    return {
+        "current": {
+            "temperature_2m": sicaklik,
+            "relative_humidity_2m": 60,
+            "wind_speed_10m": 10.5,
+            "wind_direction_10m": 180,
+            "surface_pressure": 1012.0,
+            "pressure_msl": 1015.0,
+            "weather_code": 1,
+            "time": "2026-08-15T09:00",
+        }
+    }
+
+
+class TestOpenMeteoFallback(unittest.TestCase):
+    def test_mgm_basariliysa_fallback_hic_denenmez(self):
+        session = _UrlBazliSession(
+            {
+                "sondurumlar": [{"sicaklik": 25.0, "hadiseKodu": "A", "veriZamani": "x"}],
+                "open-meteo.com": _open_meteo_basarili_yuk(),
+            }
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        veri = client.guncel_durum_yedekli(17062, 40.98, 28.87)
+        self.assertEqual(veri["kaynak"], "mgm")
+        self.assertEqual(veri["sicaklik"], 25.0)
+        self.assertTrue(all("open-meteo" not in u for u in session.calls))
+
+    def test_mgm_hata_verince_open_meteo_ya_dusuluyor(self):
+        session = _UrlBazliSession(
+            {
+                "sondurumlar": requests.ConnectionError("bağlantı reddedildi"),
+                "open-meteo.com": _open_meteo_basarili_yuk(sicaklik=18.2),
+            }
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        veri = client.guncel_durum_yedekli(17062, 40.98, 28.87)
+        self.assertEqual(veri["kaynak"], "open-meteo")
+        self.assertEqual(veri["sicaklik"], 18.2)
+        self.assertEqual(veri["durum"], "Genel Olarak Açık")  # WMO kod 1
+        self.assertEqual(veri["istasyonId"], 17062)
+
+    def test_mgm_hata_ve_konum_yoksa_fallback_denenmez_orijinal_hata_doner(self):
+        session = _UrlBazliSession({"sondurumlar": requests.ConnectionError("x")})
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        with self.assertRaises(MGMWeatherError) as ctx:
+            client.guncel_durum_yedekli(17062)  # enlem/boylam verilmedi
+        self.assertIn("bağlanılamadı", str(ctx.exception))
+        self.assertTrue(all("open-meteo" not in u for u in session.calls))
+
+    def test_ikisi_de_basarisizsa_birlesik_hata_mesaji_verilir(self):
+        session = _UrlBazliSession(
+            {
+                "sondurumlar": requests.ConnectionError("mgm çöktü"),
+                "open-meteo.com": requests.ConnectionError("open-meteo de çöktü"),
+            }
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        with self.assertRaises(MGMWeatherError) as ctx:
+            client.guncel_durum_yedekli(17062, 40.98, 28.87)
+        mesaj = str(ctx.exception)
+        self.assertIn("MGM", mesaj)
+        self.assertIn("Open-Meteo", mesaj)
+
+    def test_hava_durumu_mgm_cokse_bile_fallback_ile_doner(self):
+        merkez_yuk = [
+            {
+                "il": "İstanbul",
+                "ilce": "Bakırköy",
+                "istasyonId": 17062,
+                "enlem": 40.98,
+                "boylam": 28.87,
+            }
+        ]
+        session = _UrlBazliSession(
+            {
+                "merkezler": merkez_yuk,
+                "sondurumlar": requests.ConnectionError("mgm çöktü"),
+                "tahminler/gunluk": requests.ConnectionError("mgm çöktü"),
+                "open-meteo.com": _open_meteo_basarili_yuk(sicaklik=19.9),
+                "sunrise-sunset.org": {
+                    "results": {
+                        "sunrise": "2026-08-15T03:00:00+00:00",
+                        "sunset": "2026-08-15T16:00:00+00:00",
+                    }
+                },
+            }
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.hava_durumu("İstanbul", "Bakırköy")
+        self.assertEqual(sonuc["guncel"]["kaynak"], "open-meteo")
+        self.assertEqual(sonuc["guncel"]["sicaklik"], 19.9)
+        self.assertEqual(sonuc["tahmin"], [])  # tahmin fallback'i yok, boş liste
+
+
 if __name__ == "__main__":
     unittest.main()
