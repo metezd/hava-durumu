@@ -161,6 +161,15 @@ curl "http://127.0.0.1:5000/hava-durumu/Istanbul?ilce=Bakirkoy"
 python -m unittest discover -s tests -v
 ```
 
+## Lint
+
+```bash
+pip install ruff
+ruff check .
+```
+
+CI'da her PR'da otomatik çalışır (`.github/workflows/main.yml`). Bağımlılıklar CI ve Docker build'lerinde `requirements-lock.txt` ile kurulur, reproducible build sağlar Dependabot (`.github/dependabot.yml`) pip, Docker, GitHub Actions bağımlılıklarını haftalık tarar.
+
 ## Docker
 
 ```bash

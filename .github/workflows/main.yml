@@ -7,6 +7,24 @@ on:
     branches: [ "main" ]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repoyu Klonla
+        uses: actions/checkout@v4
+
+      - name: Python 3.13 Kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Ruff Kur
+        run: pip install ruff==0.16.3
+
+      - name: Lint
+        run: ruff check .
+
   test:
     runs-on: ubuntu-latest
 
@@ -34,7 +52,7 @@ jobs:
       - name: Bağımlılıkları Yükle
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-lock.txt
 
       - name: Testleri Çalıştır
         env:

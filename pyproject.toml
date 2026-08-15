@@ -1,0 +1,7 @@
+[tool.ruff]
+line-length = 115
+target-version = "py313"
+
+[tool.ruff.lint]
+# Bilinçli olarak dar bir set gerçek hataları ve import sıralamasını yakalar
+select = ["E", "F", "I"]
