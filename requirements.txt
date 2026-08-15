@@ -1,4 +1,5 @@
 flask>=3.0
+pyyaml>=6.0
 redis>=5.0
 requests>=2.31
 waitress>=3.0
