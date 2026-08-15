@@ -33,11 +33,20 @@ import time
 from collections import defaultdict, deque
 
 from flask import Flask, Response, jsonify, request
+from flask_compress import Compress
 
 from mgm_client import MGMWeather, MGMWeatherError, turkiye_illeri
 
 app = Flask(__name__)
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# gzip/br response compression.
+app.config["COMPRESS_MIMETYPES"] = [
+    "application/json",
+    "application/yaml",
+    "text/html",
+]
+Compress(app)
 mgm = MGMWeather(
     timeout=int(os.getenv("MGM_TIMEOUT", "10")),
     retry_total=int(os.getenv("MGM_RETRY_TOTAL", "3")),

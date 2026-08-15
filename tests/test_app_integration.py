@@ -152,6 +152,21 @@ class TestAppIntegration(unittest.TestCase):
         finally:
             app_module.RATE_LIMIT_MAX = 60
 
+    def test_iller_gzip_ile_istenince_sikistirilmis_doner(self):
+        import gzip
+        import json
+
+        resp = self.client.get("/iller", headers={"Accept-Encoding": "gzip"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.headers.get("Content-Encoding"), "gzip")
+        acilmis = json.loads(gzip.decompress(resp.data))
+        self.assertEqual(len(acilmis["veri"]), 81)
+
+    def test_iller_gzip_istenmezse_duz_metin_doner(self):
+        resp = self.client.get("/iller")
+        self.assertIsNone(resp.headers.get("Content-Encoding"))
+        self.assertEqual(len(resp.get_json()["veri"]), 81)
+
     def test_hava_durumu_endpoint(self):
         resp = self.client.get("/hava-durumu/Istanbul?ilce=Bakirkoy")
         self.assertEqual(resp.status_code, 200)

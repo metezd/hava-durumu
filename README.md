@@ -119,3 +119,5 @@ pip install ruff && ruff check .
 - Bağımlılıklar CI ve Docker build'lerinde `requirements-lock.txt` (pinlenmiş
   sürümler) ile kurulur. Dependabot (`.github/dependabot.yml`) pip/Docker/GitHub
   Actions bağımlılıklarını haftalık tarar.
+- JSON/HTML/YAML yanıtları `Accept-Encoding: gzip` gönderen istemcilere otomatik
+  sıkıştırılmış döner (`Flask-Compress`); ek bir yapılandırma gerekmez.
