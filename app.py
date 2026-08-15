@@ -32,11 +32,12 @@ import os
 import time
 from collections import defaultdict, deque
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 
 from mgm_client import MGMWeather, MGMWeatherError, turkiye_illeri
 
 app = Flask(__name__)
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 mgm = MGMWeather(
     timeout=int(os.getenv("MGM_TIMEOUT", "10")),
     retry_total=int(os.getenv("MGM_RETRY_TOTAL", "3")),
@@ -80,7 +81,7 @@ def _istasyon_id_getir(il: str, ilce: str | None) -> int | str:
 def rate_limit():
     if request.method == "OPTIONS":
         return None
-    if request.path == "/health":
+    if request.path in {"/health", "/docs", "/openapi.yaml"}:
         return None
 
     ip = request.remote_addr or "unknown"
@@ -112,6 +113,42 @@ def guvenlik_ve_cors_headerlari(response):
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none';"
     return response
+
+
+@app.get("/openapi.yaml")
+def openapi_spec():
+    with open(os.path.join(_BASE_DIR, "openapi.yaml"), encoding="utf-8") as f:
+        return Response(f.read(), mimetype="application/yaml")
+
+
+@app.get("/docs")
+def docs():
+    # Swagger UI'ı CDN'den yükleyen minimal bir HTML sayfası. Yeni bir
+    # Python bağımlılığı (flask-smorest, apispec vb.) eklemeden, elle
+    # yazılmış openapi.yaml'i görselleştirir.
+    html = """<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <title>Hava Durumu API — Dokümantasyon</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/5.17.14/swagger-ui.min.css" />
+  <style>body { margin: 0; }</style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/5.17.14/swagger-ui-bundle.min.js"></script>
+  <script>
+    window.onload = () => {
+      window.ui = SwaggerUIBundle({
+        url: "/openapi.yaml",
+        dom_id: "#swagger-ui",
+        presets: [SwaggerUIBundle.presets.apis],
+      });
+    };
+  </script>
+</body>
+</html>"""
+    return Response(html, mimetype="text/html")
 
 
 @app.get("/iller")

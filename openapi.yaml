@@ -1,0 +1,296 @@
+openapi: 3.0.3
+info:
+  title: Hava Durumu API
+  description: >
+    MGM (Meteoroloji Genel Müdürlüğü) verisini kullanan ve resmi olmayan bir REST
+    API. Redis destekli önbellek, stale-while-revalidate ve MGM kesintilerine
+    karşı circuit breaker içerir bkz. README.md
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:5000
+    description: Yerel geliştirme
+
+tags:
+  - name: iller
+    description: İl/ilçe ve istasyon bilgisi
+  - name: hava-durumu
+    description: Güncel durum, tahmin, birleşik özet
+  - name: durum
+    description: Servis sağlığı
+
+paths:
+  /iller:
+    get:
+      tags: [iller]
+      summary: Türkiye'nin 81 ilini listeler
+      description: >
+        Sabit veridir; MGM'ye istek atmaz, önbellek/circuit breaker'dan
+        etkilenmez. Plaka kodu sırasıyla döner.
+      responses:
+        "200":
+          description: İl listesi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Il"
+
+  /istasyonlar/{il}:
+    get:
+      tags: [iller]
+      summary: Bir ildeki tüm MGM istasyonlarını (ilçelerini) listeler
+      parameters:
+        - $ref: "#/components/parameters/IlPath"
+      responses:
+        "200":
+          description: İstasyon listesi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Istasyon"
+        "404":
+          $ref: "#/components/responses/BulunamadiHatasi"
+
+  /guncel/{il}:
+    get:
+      tags: [hava-durumu]
+      summary: Anlık (güncel) hava durumu
+      parameters:
+        - $ref: "#/components/parameters/IlPath"
+        - $ref: "#/components/parameters/IlceQuery"
+      responses:
+        "200":
+          description: Güncel durum
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    $ref: "#/components/schemas/GuncelDurum"
+        "404":
+          $ref: "#/components/responses/BulunamadiHatasi"
+
+  /tahmin/{il}:
+    get:
+      tags: [hava-durumu]
+      summary: 5 günlük hava tahmini
+      parameters:
+        - $ref: "#/components/parameters/IlPath"
+        - $ref: "#/components/parameters/IlceQuery"
+      responses:
+        "200":
+          description: Günlük tahmin listesi (5 gün)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GunlukTahmin"
+        "404":
+          $ref: "#/components/responses/BulunamadiHatasi"
+
+  /saatlik/{il}:
+    get:
+      tags: [hava-durumu]
+      summary: Saatlik hava tahmini (MGM'de mevcutsa)
+      description: >
+        MGM'nin ham saatlik tahmin kaydını döner; alanlar istasyona göre
+        değişebileceğinden şema serbest formatlıdır.
+      parameters:
+        - $ref: "#/components/parameters/IlPath"
+        - $ref: "#/components/parameters/IlceQuery"
+      responses:
+        "200":
+          description: Saatlik tahmin listesi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    type: array
+                    items:
+                      type: object
+        "404":
+          $ref: "#/components/responses/BulunamadiHatasi"
+
+  /hava-durumu/{il}:
+    get:
+      tags: [hava-durumu]
+      summary: Güncel durum + 5 günlük tahmin + gün doğumu/batımı (birleşik)
+      description: >
+        `/guncel`, `/tahmin` ve gün doğumu/batımı verisini tek istekte
+        toplayan üst düzey uç nokta. Gün doğumu/batımı verisi ayrı bir dış
+        servisten geldiği için başarısız olursa (sessizce) atlanır; diğer
+        alanlar yine döner.
+      parameters:
+        - $ref: "#/components/parameters/IlPath"
+        - $ref: "#/components/parameters/IlceQuery"
+      responses:
+        "200":
+          description: Birleşik hava durumu özeti
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    $ref: "#/components/schemas/HavaDurumuOzeti"
+        "404":
+          $ref: "#/components/responses/BulunamadiHatasi"
+
+  /health:
+    get:
+      tags: [durum]
+      summary: Servis sağlığı
+      description: >
+        `deep` parametresiz: sadece process'in ayakta olduğunu
+        doğrular, MGM/Redis'e istek atmaz ve rate limit'e uğramaz.
+        `?deep=1` gerçekten MGM'ye bir istek atar ve Redis bağlantısını
+        kontrol eder buna göre MGM veya Redis çökükse 503 döner.
+      parameters:
+        - name: deep
+          in: query
+          required: false
+          description: "1/true/yes/on değerlerinden biriyse derin kontrol yapılır."
+          schema:
+            type: string
+            example: "1"
+      responses:
+        "200":
+          description: Servis sağlıklı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SaglikDurumu"
+        "503":
+          description: MGM veya Redis'e ulaşılamıyor (yalnızca deep=1 iken)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SaglikDurumu"
+
+components:
+  parameters:
+    IlPath:
+      name: il
+      in: path
+      required: true
+      description: "İl adı. Türkçe karakter sorunu yaşanırsa aksansız yazın (Istanbul, Bakirkoy)."
+      schema:
+        type: string
+        example: Istanbul
+    IlceQuery:
+      name: ilce
+      in: query
+      required: false
+      description: Belirtilmezse ilin merkez istasyonu kullanılır.
+      schema:
+        type: string
+        example: Bakirkoy
+
+  responses:
+    BulunamadiHatasi:
+      description: İl/ilçe/istasyon bulunamadı ya da MGM'den veri alınamadı
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/HataYaniti"
+
+  schemas:
+    Il:
+      type: object
+      properties:
+        plakaKodu: { type: integer, example: 34 }
+        il: { type: string, example: İstanbul }
+
+    Istasyon:
+      type: object
+      description: MGM'nin ham istasyon/merkez kaydı; alan adları istasyona göre değişebilir.
+      properties:
+        istasyonId: { type: integer, example: 17062 }
+        merkezId: { type: integer, example: 17062 }
+        il: { type: string, example: İstanbul }
+        ilce: { type: string, example: Bakırköy }
+        enlem: { type: number, example: 40.98 }
+        boylam: { type: number, example: 28.87 }
+      additionalProperties: true
+
+    GuncelDurum:
+      type: object
+      properties:
+        istasyonId: { type: integer, example: 17062 }
+        sicaklik: { type: number, nullable: true, example: 21.4 }
+        nem: { type: number, nullable: true, example: 62 }
+        ruzgarHizi: { type: number, nullable: true, example: 11.2 }
+        ruzgarYonu: { type: number, nullable: true, example: 180 }
+        basinc: { type: number, nullable: true, example: 1013.2 }
+        denizSeviyesiBasinc: { type: number, nullable: true, example: 1015.1 }
+        durumKodu: { type: integer, nullable: true, example: 1 }
+        durum: { type: string, nullable: true, example: Açık }
+        olcumZamani: { type: string, nullable: true, example: "2026-08-15 09:00:00" }
+
+    GunlukTahmin:
+      type: object
+      properties:
+        tarih: { type: string, format: date, example: "2026-08-15" }
+        enDusuk: { type: number, nullable: true, example: 18.0 }
+        enYuksek: { type: number, nullable: true, example: 29.5 }
+        enDusukNem: { type: number, nullable: true, example: 45 }
+        enYuksekNem: { type: number, nullable: true, example: 70 }
+        ruzgarHizi: { type: number, nullable: true, example: 9.5 }
+        durumKodu: { type: integer, nullable: true, example: 1 }
+        durum: { type: string, nullable: true, example: Açık }
+
+    HavaDurumuOzeti:
+      type: object
+      properties:
+        il: { type: string, example: İstanbul }
+        ilce: { type: string, nullable: true, example: Bakırköy }
+        istasyonId: { type: integer, example: 17062 }
+        enlem: { type: number, nullable: true, example: 40.98 }
+        boylam: { type: number, nullable: true, example: 28.87 }
+        guncel: { $ref: "#/components/schemas/GuncelDurum" }
+        tahmin:
+          type: array
+          items: { $ref: "#/components/schemas/GunlukTahmin" }
+        gunDogumu: { type: string, nullable: true, example: "06:12" }
+        gunBatimi: { type: string, nullable: true, example: "19:48" }
+
+    SaglikDurumu:
+      type: object
+      properties:
+        basarili: { type: boolean }
+        durum: { type: string, enum: [ok, degraded], example: ok }
+        servis: { type: string, example: hava-durumu }
+        mgm: { type: string, enum: [ok, hata, skip], example: skip }
+        redis: { type: string, enum: [ok, hata, skip], example: skip }
+        circuit_breaker: { type: string, enum: [kapali, acik, yari-acik], example: kapali }
+        hata: { type: string, nullable: true }
+
+    HataYaniti:
+      type: object
+      properties:
+        basarili: { type: boolean, example: false }
+        hata: { type: string, example: "'Xyz' için istasyon bulunamadı." }

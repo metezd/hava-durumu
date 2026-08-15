@@ -124,6 +124,34 @@ class TestAppIntegration(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(len(resp.get_json()["veri"]), 81)
 
+    def test_openapi_yaml_gecerli_yaml_doner(self):
+        resp = self.client.get("/openapi.yaml")
+        self.assertEqual(resp.status_code, 200)
+        import yaml
+
+        spec = yaml.safe_load(resp.get_data(as_text=True))
+        self.assertEqual(spec["openapi"], "3.0.3")
+        self.assertIn("/hava-durumu/{il}", spec["paths"])
+        self.assertIn("/health", spec["paths"])
+
+    def test_docs_swagger_ui_html_doner(self):
+        resp = self.client.get("/docs")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("text/html", resp.content_type)
+        body = resp.get_data(as_text=True)
+        self.assertIn("swagger-ui", body)
+        self.assertIn("/openapi.yaml", body)
+
+    def test_docs_ve_openapi_rate_limite_tabi_degil(self):
+        app_module.RATE_LIMIT_MAX = 1
+        app_module.RATE_LIMIT_BUCKETS.clear()
+        try:
+            for _ in range(5):
+                self.assertEqual(self.client.get("/docs").status_code, 200)
+                self.assertEqual(self.client.get("/openapi.yaml").status_code, 200)
+        finally:
+            app_module.RATE_LIMIT_MAX = 60
+
     def test_hava_durumu_endpoint(self):
         resp = self.client.get("/hava-durumu/Istanbul?ilce=Bakirkoy")
         self.assertEqual(resp.status_code, 200)

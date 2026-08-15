@@ -51,6 +51,8 @@ Container'ın `/health` uç noktasını kullanan bir `HEALTHCHECK`'i var `docker
 
 | Uç noktalar | Açıklama |
 |---|---|
+| `GET /docs` | Swagger UI dokümantasyonu |
+| `GET /openapi.yaml` | OpenAPI 3.0 spesifikasyonu |
 | `GET /health` | Servis durumu (`?deep=1` ile MGM + Redis bağlantısı da kontrol edilir) |
 | `GET /iller` | Türkiye'nin 81 ilini plaka kodu sırasıyla listeler (sabit veri, MGM'ye istek atmaz) |
 | `GET /istasyonlar/<il>` | O ildeki istasyonları (ilçeleri) listeler |
@@ -59,7 +61,7 @@ Container'ın `/health` uç noktasını kullanan bir `HEALTHCHECK`'i var `docker
 | `GET /saatlik/<il>?ilce=<ilce>` | Saatlik tahmin |
 | `GET /hava-durumu/<il>?ilce=<ilce>` | Güncel durum + tahmin |
 
-`ilce` parametresi zorunlu değil, verilmezse ilin ilk istasyonu kullanılır.
+`ilce` parametresi verilmezse ilin ilk istasyonu kullanılır.
 
 ## Redis cache (opsiyonel)
 
