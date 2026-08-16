@@ -743,38 +743,69 @@ class MGMWeather:
 
     def il_istasyonlari(self, il: str) -> list[dict[str, Any]]:
         """
-        Bir il adına göre o ildeki tüm MGM istasyonlarını (merkezleri) döndürür.
-        Örn: il_istasyonlari("İstanbul") -> [{"istasyonId": ..., "il": ..., "ilce": ...}, ...]
+        Bir il adına göre MGM'nin döndürdüğü istasyon(lar)ı döndürür.
+
+        Önemli sınır: MGM'nin `merkezler` uç noktası, yalnızca `il` verilip
+        `ilce` verilmediğinde o ilin TÜM ilçelerini değil, genelde tek bir
+        varsayılan istasyonu döner (İstanbul için bu davranış
+        `il=istanbul` sadece Bakırköy döner, oysa
+        `il=istanbul&ilce=kadikoy` ayrı ve doğru bir sonuç döner) Yani bu
+        yöntem "ilin tüm istasyonlarının listesi" değil, "ilin varsayılan
+        istasyonu" olarak okunmalı ve belirli bir ilçeye ulaşmak için
+        ilce_istasyonu(il, ilce) kullanın, o MGM'ye ilce'yi doğrudan
+        parametre olarak gönderir (bkz. docs/resilience.md)
         """
         data = self._get("merkezler", {"il": _tr_normalize(il)})
         if not data:
             raise MGMWeatherError(f"'{il}' için istasyon bulunamadı.")
         return data
 
+    def _il_ilce_istasyonlari(self, il: str, ilce: str) -> list[dict[str, Any]]:
+        """MGM'ye hem `il` hem `ilce` parametresini birlikte gönderir.
+
+        MGM'nin merkezler uç noktası bu iki parametre birlikte verildiğinde
+        o ilçeye ait istasyonu doğrudan döner — il_istasyonlari()'nin
+        döndürdüğü listede o ilçe olmasa bile bu sorgu genelde bulur. 
+        `_get` zaten kendi cache/SWR/circuit-breaker
+        mantığını çağıran ilce_istasyonu() bunu anlamlı bir hata mesajına çevirir.
+        """
+        return (
+            self._get("merkezler", {"il": _tr_normalize(il), "ilce": _tr_normalize(ilce)})
+            or []
+        )
+
     def ilce_istasyonu(self, il: str, ilce: str | None = None) -> dict[str, Any]:
         """
-        İl (ve isteğe bağlı ilçe) adına göre tek bir istasyon kaydı döndürür.
-        ilce verilmezse ilin merkez istasyonu (listedeki ilk kayıt) döndürülür.
+        İl adına göre tek bir istasyon kaydı döndürür.
+        ilce verilmezse ilin varsayılan istasyonu döndürülür.
+
+        ilce verildiğinde MGM'ye `il`+`ilce` doğrudan parametre olarak
+        gönderilir çünkü MGM'nin il-only sorgusu genelde
+        o ilin sadece bir istasyonunu döner, tam liste değil. Bu yüzden
+        önceki bir sürümde "ilçe bulunamadı" hatası MGM'de aslında var olan
+        birçok ilçe için yanlışlıkla dönüyordu (bkz. docs/resilience.md)
         """
-        istasyonlar = self.il_istasyonlari(il)
         if ilce:
-            hedef = _tr_normalize(ilce)
-            for kayit in istasyonlar:
-                if _tr_normalize(kayit.get("ilce", "")) == hedef:
-                    return kayit
-            mevcut_ilceler = sorted(
-                {
-                    str(kayit.get("ilce", "")).strip()
-                    for kayit in istasyonlar
-                    if str(kayit.get("ilce", "")).strip()
-                }
-            )
-            if mevcut_ilceler:
+            istasyonlar = self._il_ilce_istasyonlari(il, ilce)
+            if istasyonlar:
+                return istasyonlar[0]
+            varsayilan_ilce = None
+            try:
+                varsayilan = self.il_istasyonlari(il)
+                if varsayilan:
+                    varsayilan_ilce = str(varsayilan[0].get("ilce", "")).strip() or None
+            except MGMWeatherError:
+                pass
+            if varsayilan_ilce:
                 raise MGMWeatherError(
-                    f"'{il}' ilinde '{ilce}' ilçesi bulunamadı. "
-                    f"Kullanılabilir ilçe(ler): {', '.join(mevcut_ilceler)}."
+                    f"'{il}' ilinde '{ilce}' ilçesi MGM'de bulunamadı (yazım "
+                    f"hatası olabilir). MGM bir ilin tüm ilçelerini listelemeyi "
+                    f"desteklemediğinden başka geçerli ilçe adlarını burada "
+                    f"göremiyoruz; '{il}' için varsayılan istasyon: "
+                    f"{varsayilan_ilce}."
                 )
             raise MGMWeatherError(f"'{il}' ilinde '{ilce}' ilçesi bulunamadı.")
+        istasyonlar = self.il_istasyonlari(il)
         return istasyonlar[0]
 
     # Güncel durum

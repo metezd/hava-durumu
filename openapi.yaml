@@ -206,7 +206,12 @@ components:
       name: ilce
       in: query
       required: false
-      description: Belirtilmezse ilin merkez istasyonu kullanılır.
+      description: >
+        Belirtilmezse MGM'nin o il için döndürdüğü varsayılan istasyon
+        kullanılır. Not: `/istasyonlar/<il>` MGM'nin kısıtı yüzünden o
+        ilin tüm ilçelerini listeleyemez (MGM bunu desteklemiyor) — geçerli
+        bir ilçe adını zaten biliyorsanız doğrudan burada belirtin, MGM'ye
+        ayrıca sorgulanır.
       schema:
         type: string
         example: Bakirkoy

@@ -588,5 +588,76 @@ class TestRedisBaslangicYenidenDeneme(unittest.TestCase):
         self.assertIn("3 denemeden", str(ctx.exception))
 
 
+class _IlceFarkindaSession:
+    """merkezler isteklerinde `il`/`ilce` parametrelerine göre farklı sahte
+    yanıt döner — MGM'nin gerçek (canlıda doğrulanmış) davranışını taklit
+    eder: il-only sorgu o ilin sadece varsayılan istasyonunu döner, il+ilce
+    sorgusu o ilçeye özel (farklı) bir istasyon döner."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def get(self, url, params=None, **kwargs):
+        params = dict(params or {})
+        self.calls.append(params)
+        if "merkezler" not in url:
+            raise AssertionError(f"Beklenmeyen URL: {url}")
+        il, ilce = params.get("il"), params.get("ilce")
+        if il == "istanbul" and not ilce:
+            return _DummyResponse(
+                [{"il": "İstanbul", "ilce": "Bakırköy", "istasyonId": 93401,
+                  "enlem": 40.98, "boylam": 28.82}]
+            )
+        if il == "istanbul" and ilce == "kadikoy":
+            return _DummyResponse(
+                [{"il": "İstanbul", "ilce": "Kadıköy", "istasyonId": 93409,
+                  "enlem": 40.99, "boylam": 29.02}]
+            )
+        if il == "istanbul" and ilce == "olmayanilce":
+            return _DummyResponse([])  # MGM: bulunamadı, boş dizi
+        raise AssertionError(f"Beklenmeyen params: {params}")
+
+
+class TestIlceDogrudanSorgu(unittest.TestCase):
+    """MGM'nin merkezler uç noktası il-only sorguda o ilin sadece bir
+    (varsayılan) istasyonunu döner, tüm ilçelerini değil — bu canlıda
+    doğrulandı (İstanbul: il=istanbul -> yalnızca Bakırköy, ama
+    il=istanbul&ilce=kadikoy -> ayrı ve doğru bir sonuç döner). Doğru
+    davranış: ilce verildiğinde MGM'ye doğrudan parametre olarak
+    gönderilmeli, il_istasyonlari()'nin dar listesinde client-side arama
+    yapılmamalı."""
+
+    def test_ilce_verilmezse_ilin_varsayilan_istasyonu_doner(self):
+        session = _IlceFarkindaSession()
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        istasyon = client.ilce_istasyonu("istanbul")
+        self.assertEqual(istasyon["ilce"], "Bakırköy")
+
+    def test_ilce_mgmye_dogrudan_parametre_olarak_gonderilir(self):
+        session = _IlceFarkindaSession()
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        istasyon = client.ilce_istasyonu("istanbul", "kadikoy")
+        self.assertEqual(istasyon["ilce"], "Kadıköy")
+        self.assertEqual(istasyon["istasyonId"], 93409)
+        self.assertTrue(any(c.get("ilce") == "kadikoy" for c in session.calls))
+
+    def test_mgmde_gercekten_olmayan_ilce_icin_durust_hata_verir(self):
+        session = _IlceFarkindaSession()
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        with self.assertRaises(MGMWeatherError) as ctx:
+            client.ilce_istasyonu("istanbul", "olmayanilce")
+        mesaj = str(ctx.exception)
+        # Artık "Kullanılabilir ilçe(ler): X" gibi yanlışlıkla tam liste
+        # iddia eden bir ifade yok; sadece varsayılan istasyonu öneriyor.
+        self.assertNotIn("Kullanılabilir ilçe(ler)", mesaj)
+        self.assertIn("Bakırköy", mesaj)
+
+
 if __name__ == "__main__":
     unittest.main()

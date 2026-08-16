@@ -86,6 +86,25 @@ Sınır: il/ilçe → istasyon çözümlemesi de MGM'den geliyor
 cache girdileri kullandığından genelde biri çökükken diğeri hâlâ cache'te
 taze olur ama ikisi de aynı anda cache'siz düşerse enlem/boylam da elde olmayacağından bu fallback devreye giremez ve orijinal MGM hatası döner.
 
+## MGM'nin il/ilçe API kısıtı
+
+MGM'nin `merkezler` uç noktası, yalnızca `il` verilip `ilce` verilmediğinde
+o ilin **tüm ilçelerini değil, genelde tek bir varsayılan
+istasyonu** döner. Denendi onaylandı: `il=istanbul` sadece Bakırköy döner,
+ama `il=istanbul&ilce=kadikoy` ayrı ve doğru bir sonuç döner. Yani MGM'nin bu uç noktası "bir ilin tüm ilçelerini listele" değil, "il + (bilinen) ilçe 
+adına göre istasyon bul" şeklinde çalışıyor
+
+Bu yüzden `ilce_istasyonu(il, ilce)`, `ilce` verildiğinde onu doğrudan
+MGM'ye parametre olarak gönderir — `il_istasyonlari()`'nin döndürdüğü dar
+listede client-side arama yapmaz
+
+Sonuç olarak `GET /istasyonlar/<il>` (ilce'siz) bir ilin tüm ilçelerinin
+listesi değildir. Sadece MGM'nin o il için döndürdüğü varsayılan
+istasyondur. Geçerli bir ilçe adını zaten biliyorsanız `ilce` parametresiyle
+doğrudan sorgulayın; MGM'nin ilçe adlarını topluca listeleyen bilinen bir
+uç noktası yok, bu yüzden "bu ilde hangi ilçeler var" sorusunu bu API
+üzerinden yanıtlayamayız.
+
 ## Tüm ortam değişkenleri
 
 **MGM istemcisi (timeout / retry):**
