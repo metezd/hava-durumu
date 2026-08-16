@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: mgm-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    region: frankfurt
+    healthCheckPath: /health
+    envVars:
+      - key: MGM_REDIS_URL
+        fromService:
+          type: keyvalue
+          name: mgm-api-cache
+          property: connectionString
+
+  - type: keyvalue
+    name: mgm-api-cache
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList:
+      - source: 0.0.0.0/0
+        description: "Blueprint dahilindeki web servisinin erişimi (herkese açık; hassas veri tutmuyor, sadece cache)"
