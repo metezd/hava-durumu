@@ -1,18 +1,19 @@
 # Dayanıklılık (resilience) mimarisi ve yapılandırma
 
 MGM'nin sitesinin resmi bir garantisi yoktur. Servis zaman zaman yavaşlayabilir veya kesilebilir
-Bu proje, kullanıcıya bunu hissettirmemek için üç katman kullanıyor: **cache**,
-**stale-while-revalidate** ve **circuit breaker**. Bu belge üçünün nasıl
+Bu proje, kullanıcıya bunu hissettirmemek için üç katman kullanıyor: cache,
+stale-while-revalidate ve circuit breaker. Bu belge üçünün nasıl
 çalıştığını ve ilgili tüm ortam değişkenlerini anlatır. Hızlı başlangıç ve
-endpoint listesi için [README](../README.md)'ye bakınız.
+endpoint listesi için [README](../README.md)'ye, Docker/test/CI detayları
+için [development.md](development.md)'ye bakınız.
 
 ## Redis cache (opsiyonel)
 
 Uygulama yanında opsiyonel bir Redis veya [Redis Stack](https://redis.io/docs/latest/operate/oss_and_stack/install/install-stack/)
 kullanabilirsiniz. Redis sunucusunu `docker run -d --rm -p 6379:6379 redis:7-alpine`
-ile ayağa kaldırabilirsiniz.
+ile çalıştırabilirsiniz.
 
-`MGM_REDIS_URL` ortam değişkeni set edilirse Redis birincil cache olur
+`MGM_REDIS_URL` ortam değişkeni ayarlanırsa Redis birincil cache olur
 (in-memory cache'in önüne geçer):
 
 ```bash
@@ -24,49 +25,41 @@ istiyorsanız değişkeni ayarlamayın ve bunun sonucunda in-memory cache ile ç
 (`docker compose up` kullanıyorsanız bu adımlarla hiç uğraşmanıza gerek yok.
 Redis servisi ve `MGM_REDIS_URL` otomatik ayarlanır.)
 
-Başlangıçtaki ilk bağlantı denemesi 5 kez, 2 saniye arayla tekrarlanır 
-Render, Docker Compose gibi ortamlarda web servis ile Redis'in yaklaşık eşzamanlı başlatılması yüzünden ilk ping'ingeçici olarak başarısız olması 
-gerçek bir yanlış yapılandırma değildir, birkaç saniye içinde kendini toparlar
-
-Redis cache'te **socket timeout (2 sn)** ve **connect timeout (2 sn)** zorunlu
+Redis cache'te socket timeout ve connect timeout (2 sn) zorunlu
 olarak uygulanır bu sayede Redis'in yavaşlaması veya çökmesi istek akışını
 uzun süre engellemez. Gün doğumu/batımı verisi de aynı cache altyapısından
 geçer.
 
-## Stale-while-revalidate (SWR) ve cache stampede koruması
+## Stale-while-revalidate ve cache stampede koruması
 
 Cache kayıtları iki aşamalı yaşlanır:
 
 - **Taze dönem (`MGM_CACHE_TTL`):** kayıt doğrudan döner.
 - **Stale dönem (`MGM_STALE_WHILE_REVALIDATE`):** TTL dolduktan sonra
-  kullanıcıya eski veri **anında** döner, yeni veri arka planda getirilip
+  kullanıcıya eski veri anında döner, yeni veri arka planda getirilip
   cache güncellenir. İstek MGM'nin yavaşlığından etkilenmez.
-- Stale dönemi de dolarsa istek bloklayıcı şekilde MGM'den taze veri çeker.
+- Stale dönemi de dolarsa istek engelleyici şekilde MGM'den taze veri çeker.
 
-Aynı anahtar için eşzamanlı isteklerde yalnızca biri yenilemeyi yapar (işlem
-içi kilit + Redis `SET NX EX` kilidi, cache stampede koruması). SWR'yi
+Aynı anahtar için eşzamanlı isteklerde yalnızca biri yenilemeyi yapar. SWR'yi
 kapatmak için `MGM_STALE_WHILE_REVALIDATE=0` verin.
 
 ## Circuit breaker
 
-MGM art arda hata verdiğinde (30 sn içinde 5 hata) devre
-**açılır**: bunu izleyen süre boyunca (60 sn) MGM'ye hiç istek
-atılmaz, doğrudan hata dönülür. Süre dolunca devre **yarı açık** olur; tek bir
-deneme isteği yapılır
+MGM art arda hata verdiğinde devre açılır: bunu izleyen süre boyunca MGM'ye hiç istek
+atılmaz, doğrudan hata döner. Süre dolunca devre **yarı açık** olur ve tek bir
+deneme isteği yapılır eğer başarılıysa devre kapanır, başarısızsa tekrar açılır
 
-Önemli: circuit breaker yalnızca **asıl ağ isteğini** keser, cache/SWR
-katmanının önüne geçmez. Yani MGM kesintisi sırasında elinizde stale (TTL'i
-geçmiş ama SWR penceresi içindeki) veri varsa kullanıcı bunu almaya devam
-eder; breaker sadece arka planda MGM'yi gereksiz yere zorlayan/bekleten
-istekleri atlar. Cache'te hiç veri yoksa devre açıkken istek anında hatayla
-döner — retry/backoff süresi boyunca beklemez.
+Önemli: circuit breaker sadece **asıl ağ isteğini** keser, cache
+katmanının önüne geçmez. Yani MGM kesintisi sırasında elinizde stale veri 
+varsa kullanıcı bunu almaya devam eder, breaker sadece arka planda MGM'yi gereksiz yere zorlayan istekleri atlar. Cache'te hiç veri yoksa devre açıkken istek hatayla
+döner ve retry/backoff süresi boyunca beklemez.
 
-Durum `GET /health` (hem shallow hem `?deep=1`) yanıtında `circuit_breaker`
-alanıyla görülebilir: `kapali` | `acik` | `yari-acik`.
+Durum `GET /health` yanıtında `circuit_breaker`
+alanıyla görülebilir: `kapali` | `acik` | `yari-acik`
 
-## Open-Meteo fallback (yalnızca anlık durum)
+## Open-Meteo fallback (sadece anlık durum)
 
-Circuit breaker + SWR, MGM'nin kısa süreli hatalarını büyük
+Circuit breaker ve SWR, MGM'nin kısa süreli hatalarını büyük
 ölçüde yutar ama cache'te hiç veri olmayan bir anahtarda
 tam MGM kesintisi sırasında yine de elde bir şey kalmaz. 
 Bu durumda `GET /guncel` ve `GET /hava-durumu` uçları key
@@ -86,15 +79,12 @@ Yanıtta hangi kaynaktan geldiği her zaman açık:
 ```
 
 `kaynak: "open-meteo"` iken `durumKodu`, MGM'nin değil Open-Meteo'nun WMO
-kod uzayındandır — ikisi doğrudan karşılaştırılamaz, `durum` alanındaki
-Türkçe açıklamaya bakın.
+kod alanında ve ikisi doğrudan karşılaştırılamaz, `durum` alanına bakın
 
 Sınır: il/ilçe → istasyon çözümlemesi de MGM'den geliyor
 (`merkezler` uç noktası). MGM'nin istasyon listesi ile anlık durum ayrı
 cache girdileri kullandığından genelde biri çökükken diğeri hâlâ cache'te
-taze olur ama ikisi de aynı anda cache'siz düşerse (soğuk anahtar + tam
-MGM kesintisi) enlem/boylam da elde olmayacağından bu fallback devreye
-giremez ve orijinal MGM hatası döner.
+taze olur ama ikisi de aynı anda cache'siz düşerse enlem/boylam da elde olmayacağından bu fallback devreye giremez ve orijinal MGM hatası döner.
 
 ## Tüm ortam değişkenleri
 
@@ -152,4 +142,4 @@ Requests` döner (`/health`, `/docs`, `/openapi.yaml` bu limitten muaf)
 | `APP_SERVER` | `waitress` |
 | `FLASK_DEBUG` | yalnızca `APP_SERVER=flask` iken etkili |
 
-Tüm değişkenler için varsayılanlarıyla birlikte örnek bir dosya: [`.env.example`](../.env.example).
+Tüm değişkenler için varsayılanlarıyla birlikte örnek bir dosya: [`.env.example`](../.env.example)
