@@ -1,6 +1,7 @@
 import threading
 import time
 import unittest
+from unittest.mock import MagicMock, patch
 
 import requests
 
@@ -539,6 +540,52 @@ class TestOpenMeteoFallback(unittest.TestCase):
         self.assertEqual(sonuc["guncel"]["kaynak"], "open-meteo")
         self.assertEqual(sonuc["guncel"]["sicaklik"], 19.9)
         self.assertEqual(sonuc["tahmin"], [])  # tahmin fallback'i yok, boş liste
+
+
+class TestRedisBaslangicYenidenDeneme(unittest.TestCase):
+    """Render/Docker Compose gibi ortamlarda web servis ile Redis'in
+    yaklaşık eşzamanlı başlatılması, ilk ping'in geçici olarak (DNS henüz
+    hazır değilken) başarısız olmasına yol açabiliyor. Bu, gerçek bir
+    yanlış yapılandırmadan ayırt edilmeli — birkaç deneme sonra toparlanmalı,
+    ama denemeler gerçekten tükenirse hâlâ sert şekilde hata vermeli."""
+
+    def test_gecici_baglanti_hatasi_birkac_denemeden_sonra_toparlanir(self):
+        import redis as redis_module
+
+        sahte_client = MagicMock()
+        sahte_client.ping.side_effect = [
+            redis_module.exceptions.ConnectionError("dns henüz hazır değil"),
+            redis_module.exceptions.ConnectionError("dns henüz hazır değil"),
+            True,
+        ]
+
+        with (
+            patch("redis.Redis.from_url", return_value=sahte_client),
+            patch("mgm_client.REDIS_STARTUP_RETRY_DELAY_SECONDS", 0.01),
+        ):
+            client = MGMWeather(redis_url="redis://sahte-host:6379/0")
+
+        self.assertTrue(client._redis_available)
+        self.assertEqual(sahte_client.ping.call_count, 3)
+
+    def test_denemeler_tukenirse_hata_firlatilir(self):
+        import redis as redis_module
+
+        sahte_client = MagicMock()
+        sahte_client.ping.side_effect = redis_module.exceptions.ConnectionError(
+            "gerçekten çökük"
+        )
+
+        with (
+            patch("redis.Redis.from_url", return_value=sahte_client),
+            patch("mgm_client.REDIS_STARTUP_RETRY_DELAY_SECONDS", 0.01),
+            patch("mgm_client.REDIS_STARTUP_RETRY_ATTEMPTS", 3),
+        ):
+            with self.assertRaises(MGMWeatherError) as ctx:
+                MGMWeather(redis_url="redis://sahte-host:6379/0")
+
+        self.assertEqual(sahte_client.ping.call_count, 3)
+        self.assertIn("3 denemeden", str(ctx.exception))
 
 
 if __name__ == "__main__":

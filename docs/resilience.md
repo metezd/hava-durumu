@@ -24,6 +24,10 @@ istiyorsanız değişkeni ayarlamayın ve bunun sonucunda in-memory cache ile ç
 (`docker compose up` kullanıyorsanız bu adımlarla hiç uğraşmanıza gerek yok.
 Redis servisi ve `MGM_REDIS_URL` otomatik ayarlanır.)
 
+Başlangıçtaki ilk bağlantı denemesi 5 kez, 2 saniye arayla tekrarlanır 
+Render, Docker Compose gibi ortamlarda web servis ile Redis'in yaklaşık eşzamanlı başlatılması yüzünden ilk ping'ingeçici olarak başarısız olması 
+gerçek bir yanlış yapılandırma değildir, birkaç saniye içinde kendini toparlar
+
 Redis cache'te **socket timeout (2 sn)** ve **connect timeout (2 sn)** zorunlu
 olarak uygulanır bu sayede Redis'in yavaşlaması veya çökmesi istek akışını
 uzun süre engellemez. Gün doğumu/batımı verisi de aynı cache altyapısından
@@ -45,10 +49,10 @@ kapatmak için `MGM_STALE_WHILE_REVALIDATE=0` verin.
 
 ## Circuit breaker
 
-MGM art arda hata verdiğinde (varsayılan: 30 sn içinde 5 hata) devre
-**açılır**: bunu izleyen süre boyunca (varsayılan 60 sn) MGM'ye hiç istek
+MGM art arda hata verdiğinde (30 sn içinde 5 hata) devre
+**açılır**: bunu izleyen süre boyunca (60 sn) MGM'ye hiç istek
 atılmaz, doğrudan hata dönülür. Süre dolunca devre **yarı açık** olur; tek bir
-deneme isteği yapılır — başarılıysa devre kapanır, başarısızsa tekrar açılır.
+deneme isteği yapılır
 
 Önemli: circuit breaker yalnızca **asıl ağ isteğini** keser, cache/SWR
 katmanının önüne geçmez. Yani MGM kesintisi sırasında elinizde stale (TTL'i

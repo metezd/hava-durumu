@@ -37,17 +37,16 @@ logger = logging.getLogger("mgm_client")
 REDIS_CONNECT_TIMEOUT = 2.0
 REDIS_SOCKET_TIMEOUT = 2.0
 REDIS_HEALTH_CHECK_INTERVAL = 30
+REDIS_STARTUP_RETRY_ATTEMPTS = 5
+REDIS_STARTUP_RETRY_DELAY_SECONDS = 2.0
 
-# Redis cache kayıt sarmalayıcısındaki anahtarlar. SWR için verinin yazılma
-# zamanı da saklanır.
+# Redis cache kayıt sarmalayıcısındaki anahtarlar
 _CACHED_AT_KEY = "_cachedAt"
 _VALUE_KEY = "_value"
 
-# Circuit breaker varsayılanları: MGM art arda hata verirse (varsayılan
-# olarak 30 sn içinde 5 hata) devre açılır ve bu süre boyunca MGM'ye hiç
-# istek atılmadan doğrudan hata dönülür. Cache/Redis (SWR) katmanı ayrı
-# çalışır: elde stale veri varsa breaker açıkken bile o veri kullanıcıya
-# dönmeye devam eder, sadece asıl ağ isteği atlanır.
+# Circuit breaker varsayılanları: MGM art arda hata verirse
+# devre açılır ve bu süre boyunca MGM'ye hiç istek atılmadan 
+# doğrudan hata dönülür. Cache katmanı ayrı çalışır
 CIRCUIT_BREAKER_FAILURE_THRESHOLD = 5
 CIRCUIT_BREAKER_WINDOW_SECONDS = 30.0
 CIRCUIT_BREAKER_OPEN_SECONDS = 60.0
@@ -178,10 +177,8 @@ CONDITION_CODES: dict[str, str] = {
     "KGY": "Kuvvetli Gökgürültülü Sağanak Yağışlı",
 }
 
-# Open-Meteo WMO hava durumu kodları (https://open-meteo.com/en/docs — "WMO
-# Weather interpretation codes"). MGM'nin kendi CONDITION_CODES'undan (string
-# anahtarlı) tamamen ayrı bir kod uzayı — karıştırılmasın diye ayrı bir
-# sözlükte tutuluyor. Sadece fallback (Open-Meteo) yanıtlarında kullanılır.
+# Open-Meteo WMO hava durumu kodları (https://open-meteo.com/en/docs)
+# Sadece fallback yanıtlarında kullanılır
 WMO_CONDITION_CODES: dict[int, str] = {
     0: "Açık",
     1: "Genel Olarak Açık",
@@ -220,11 +217,7 @@ def _tr_normalize(text: str) -> str:
     """Şehir ve ilçe adlarını MGM servisinin beklediği sadeleştirilmiş forma çevirir."""
     return text.translate(_TR_MAP).lower().strip()
 
-
-# Türkiye'nin 81 ili, resmi plaka kodu sırasıyla. Bu liste MGM'den değil
-# sabit/bilinen veriden gelir: il sayısı/sınırları pratikte değişmediği için
-# her istekte MGM'ye sormaya (ayrı bir cache/breaker mekanizmasına) gerek
-# yoktur. `GET /iller` doğrudan bu sabitten döner.
+#`GET /iller` doğrudan bu sabitten döner.
 TURKIYE_ILLERI: list[dict[str, Any]] = [
     {"plakaKodu": 1, "il": "Adana"},
     {"plakaKodu": 2, "il": "Adıyaman"},
@@ -400,17 +393,38 @@ class MGMWeather:
                     "Redis cache için 'redis' paketi kurulu değil. "
                     "`pip install -r requirements.txt` çalıştırın."
                 ) from exc
-            try:
-                self.redis_client = redis.Redis.from_url(
-                    self.redis_url,
-                    decode_responses=True,
-                    socket_connect_timeout=REDIS_CONNECT_TIMEOUT,
-                    socket_timeout=REDIS_SOCKET_TIMEOUT,
-                    health_check_interval=REDIS_HEALTH_CHECK_INTERVAL,
-                )
-                self.redis_client.ping()
-            except redis.RedisError as exc:
-                raise MGMWeatherError(f"Redis bağlantısı kurulamadı: {exc}") from exc
+
+            self.redis_client = redis.Redis.from_url(
+                self.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=REDIS_CONNECT_TIMEOUT,
+                socket_timeout=REDIS_SOCKET_TIMEOUT,
+                health_check_interval=REDIS_HEALTH_CHECK_INTERVAL,
+            )
+            son_hata: Exception | None = None
+            for deneme in range(1, REDIS_STARTUP_RETRY_ATTEMPTS + 1):
+                try:
+                    self.redis_client.ping()
+                    son_hata = None
+                    break
+                except redis.RedisError as exc:
+                    son_hata = exc
+                    if deneme < REDIS_STARTUP_RETRY_ATTEMPTS:
+                        logger.warning(
+                            "Redis'e başlangıç bağlantısı başarısız (deneme %d/%d): %s "
+                            "— %.1f sn sonra tekrar denenecek",
+                            deneme,
+                            REDIS_STARTUP_RETRY_ATTEMPTS,
+                            exc,
+                            REDIS_STARTUP_RETRY_DELAY_SECONDS,
+                        )
+                        time.sleep(REDIS_STARTUP_RETRY_DELAY_SECONDS)
+            if son_hata is not None:
+                raise MGMWeatherError(
+                    f"Redis bağlantısı {REDIS_STARTUP_RETRY_ATTEMPTS} denemeden "
+                    f"sonra kurulamadı: {son_hata}"
+                ) from son_hata
+
             self._redis_error_cls = redis.RedisError
             self._redis_available = True
 
