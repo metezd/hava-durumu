@@ -17,7 +17,8 @@ services:
   - type: keyvalue
     name: mgm-api-cache
     plan: free
+    region: frankfurt
     maxmemoryPolicy: allkeys-lru
     ipAllowList:
       - source: 0.0.0.0/0
-        description: "Blueprint dahilindeki web servisinin erişimi"
+        description: "Blueprint dahilindeki web servisinin erişimi (herkese açık; hassas veri tutmuyor, sadece cache)"
