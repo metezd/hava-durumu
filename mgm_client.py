@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import copy
 import datetime as _dt
+import difflib
 import json
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -344,6 +346,7 @@ class MGMWeather:
     BASE_URL = "https://servis.mgm.gov.tr/web"
     SUNRISE_URL = "https://api.sunrise-sunset.org/json"
     OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+    OPEN_METEO_GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 
     HEADERS = {
         "Host": "servis.mgm.gov.tr",
@@ -979,6 +982,173 @@ class MGMWeather:
 
         return self._cached_get(cache_key, loader)
 
+    def _il_yakin_eslesme(self, token: str) -> str | None:
+        """
+        Verilen kelimeyi 81 il listesindeki en yakın ile eşler (typo
+        toleranslı). Önce tam normalize eşleşmeye bakar, olmazsa stdlib
+        difflib ile yakın eşleşme dener — 81 sabit string üzerinde
+        çalıştığı için ağır bir NLP/ML kütüphanesi gerekmez, difflib
+        fazlasıyla yeterli. Eşleşme yeterince güçlü değilse None döner.
+        """
+        hedef = _tr_normalize(token)
+        il_map = {_tr_normalize(kayit["il"]): kayit["il"] for kayit in TURKIYE_ILLERI}
+        if hedef in il_map:
+            return il_map[hedef]
+        yakinlar = difflib.get_close_matches(hedef, il_map.keys(), n=1, cutoff=0.75)
+        return il_map[yakinlar[0]] if yakinlar else None
+
+    @staticmethod
+    def _sorguyu_parcala(sorgu: str) -> list[str]:
+        """'kadikoy/istanbul', 'kadikoy, istanbul', 'istanbul kadikoy' gibi
+        serbest metin girdilerini parçalara ayırır."""
+        parcalar = re.split(r"[/,]+|\s+", sorgu.strip())
+        return [p for p in parcalar if p]
+
+    def _open_meteo_geocode(self, sorgu: str, adet: int = 5) -> list[dict[str, Any]]:
+        """
+        Serbest metin bir yer adını (mahalle, semt, önemli bina/kurum adı
+        dahil) key gerektirmeyen Open-Meteo Geocoding API'siyle koordinata
+        çözer. akilli_yer_bul()'un ilk iki katmanı (tam eşleşme, il+ilçe
+        parçalama) sonuç veremediğinde son çare olarak kullanılır.
+        """
+        params = {"name": sorgu, "count": adet, "language": "tr", "format": "json"}
+        cache_key = self._cache_key("open-meteo-geocode", params)
+
+        def loader() -> list[dict[str, Any]]:
+            try:
+                resp = self.session.get(
+                    self.OPEN_METEO_GEOCODE_URL, params=params, timeout=self.timeout
+                )
+                resp.raise_for_status()
+                return resp.json().get("results") or []
+            except (requests.RequestException, ValueError) as exc:
+                raise MGMWeatherError(
+                    f"Open-Meteo geocoding servisinden veri alınamadı: {exc}"
+                ) from exc
+
+        return self._cached_get(cache_key, loader)
+
+    def akilli_yer_bul(self, sorgu: str) -> dict[str, Any]:
+        """
+        Serbest metin bir sorguyu ("kadıköy", "kadikoy/istanbul",
+        "maslak itü" gibi) bir yere çözümlemeye çalışır. Katmanlı çalışır,
+        her katman bir öncekinin çözemediği durumda devreye girer:
+
+        1. **Tam eşleşme** — sorgunun tamamı 81 ilden biriyle (typo
+           toleranslı) eşleşiyorsa, o ilin varsayılan istasyonu kullanılır.
+           Ağ isteği yok.
+        2. **Parçalama** — sorgu '/', ',' ya da boşlukla ayrılmış
+           parçalara bölünür; parçalardan biri bilinen bir ile (typo
+           toleranslı) yakınsa, geri kalan parça(lar) ilçe adayı olarak
+           doğrudan MGM'ye sorulur (bkz. ilce_istasyonu — MGM'nin il+ilçe
+           birlikte verildiğinde doğru sonucu döndüğü ayrıca doğrulanmış
+           bir davranıştır). Tek bir MGM isteği.
+        3. **Geocoding** — ilk iki katman sonuç vermezse, sorgu
+           Open-Meteo'nun (key gerektirmeyen) geocoding servisine
+           gönderilir. Dönen en iyi aday tekrar MGM'de (il+ilçe olarak)
+           denenir; MGM'de de bulunamazsa (örn. "Maslak" resmi bir ilçe
+           değil, bir mahalle) doğrudan o koordinatla Open-Meteo'dan hava
+           durumu döndürülür.
+
+        Dönüş sözlüğü her zaman bir `durum` alanı içerir:
+        - `"cozuldu"`: `il`/`ilce` (ya da doğrudan `enlem`/`boylam`) ve
+          `yontem` doludur.
+        - `"belirsiz"`: geocoding, farklı illerde birden fazla makul aday
+          döndürdü — `secenekler` doludur, tahmin yürütülmedi.
+        - `"bulunamadi"`: hiçbir katman bir sonuç üretemedi.
+        """
+        sorgu = (sorgu or "").strip()
+        if not sorgu:
+            return {"durum": "bulunamadi", "sorgu": sorgu}
+
+        # Katman 1: sorgunun tamamı doğrudan bir il mi?
+        il = self._il_yakin_eslesme(sorgu)
+        if il:
+            return {"durum": "cozuldu", "yontem": "il-eslesme", "il": il, "ilce": None}
+
+        # Katman 2: parçalama — bir parça il, kalan(lar) ilçe adayı
+        parcalar = self._sorguyu_parcala(sorgu)
+        if len(parcalar) >= 2:
+            for i, parca in enumerate(parcalar):
+                il = self._il_yakin_eslesme(parca)
+                if not il:
+                    continue
+                ilce_adayi = " ".join(p for j, p in enumerate(parcalar) if j != i).strip()
+                if not ilce_adayi:
+                    continue
+                try:
+                    istasyon = self.ilce_istasyonu(il, ilce_adayi)
+                except MGMWeatherError:
+                    continue
+                return {
+                    "durum": "cozuldu",
+                    "yontem": "il-ilce-parcalama",
+                    "il": il,
+                    "ilce": istasyon.get("ilce", ilce_adayi),
+                }
+
+        # Katman 3: geocoding (typo/semantik — "maslak itü" gibi girdiler)
+        try:
+            adaylar = self._open_meteo_geocode(sorgu)
+        except MGMWeatherError:
+            adaylar = []
+
+        tr_adaylar = [a for a in adaylar if a.get("country_code") == "TR"]
+        adaylar = tr_adaylar or adaylar
+        if not adaylar:
+            return {"durum": "bulunamadi", "sorgu": sorgu}
+
+        # İlk birkaç aday farklı illere yayılıyorsa gerçekten belirsiz
+        # demektir — tahmin yürütmek yerine seçenek sunuyoruz.
+        farkli_iller = {a.get("admin1") for a in adaylar[:3] if a.get("admin1")}
+        if len(farkli_iller) > 1:
+            return {
+                "durum": "belirsiz",
+                "sorgu": sorgu,
+                "secenekler": [
+                    {
+                        "yer": a.get("name"),
+                        "il": a.get("admin1"),
+                        "ulke": a.get("country"),
+                        "enlem": a.get("latitude"),
+                        "boylam": a.get("longitude"),
+                    }
+                    for a in adaylar[:5]
+                ],
+            }
+
+        en_iyi = adaylar[0]
+        il_adayi = en_iyi.get("admin1")
+        yer_adi = en_iyi.get("name")
+        if il_adayi and yer_adi:
+            il = self._il_yakin_eslesme(il_adayi)
+            if il:
+                try:
+                    istasyon = self.ilce_istasyonu(il, yer_adi)
+                    return {
+                        "durum": "cozuldu",
+                        "yontem": "geocoding-mgm",
+                        "il": il,
+                        "ilce": istasyon.get("ilce", yer_adi),
+                    }
+                except MGMWeatherError:
+                    pass
+
+        # MGM'de çözülemedi (örn. resmi ilçe olmayan bir mahalle) ama
+        # geocoding bir koordinat verdi — doğrudan Open-Meteo'ya düş.
+        enlem, boylam = en_iyi.get("latitude"), en_iyi.get("longitude")
+        if enlem is not None and boylam is not None:
+            return {
+                "durum": "cozuldu",
+                "yontem": "geocoding-dogrudan",
+                "il": il_adayi,
+                "ilce": yer_adi,
+                "enlem": enlem,
+                "boylam": boylam,
+            }
+
+        return {"durum": "bulunamadi", "sorgu": sorgu}
+
     def hava_durumu(self, il: str, ilce: str | None = None) -> dict[str, Any]:
         """
         Verilen il/ilçe için güncel durum + 5 günlük tahmini tek seferde
@@ -1012,6 +1182,47 @@ class MGMWeather:
             pass
 
         return sonuc
+
+    def hava_durumu_akilli(self, sorgu: str) -> dict[str, Any]:
+        """
+        `/ara` uç noktasının üst düzey yardımcı fonksiyonu: akilli_yer_bul()
+        ile serbest metin sorguyu çözüp hava durumunu döner.
+
+        - "cozuldu" ise hava_durumu()'nun döndürdüğü sözlüğe `durum`,
+          `sorgu`, `yontem` alanları eklenerek döner (MGM istasyonuna
+          çözüldüyse tam hava_durumu() yanıtı; sadece koordinat çözüldüyse
+          — örn. "Maslak" gibi resmi ilçe olmayan bir yer — Open-Meteo'dan
+          yalnızca güncel durum, tahmin boş liste).
+        - "belirsiz" ise hava durumu getirmeden seçenek listesini döner;
+          çağıran kullanıcıya seçim yaptırmalı.
+        - Hiçbir şey çözülemezse MGMWeatherError fırlatır.
+        """
+        sonuc = self.akilli_yer_bul(sorgu)
+        if sonuc["durum"] == "bulunamadi":
+            raise MGMWeatherError(f"'{sorgu}' herhangi bir yere çözümlenemedi.")
+        if sonuc["durum"] == "belirsiz":
+            return sonuc
+
+        if sonuc["yontem"] == "geocoding-dogrudan":
+            guncel = self._open_meteo_guncel_durum(sonuc["enlem"], sonuc["boylam"])
+            guncel["kaynak"] = "open-meteo"
+            return {
+                "durum": "cozuldu",
+                "sorgu": sorgu,
+                "yontem": sonuc["yontem"],
+                "il": sonuc.get("il"),
+                "ilce": sonuc.get("ilce"),
+                "enlem": sonuc["enlem"],
+                "boylam": sonuc["boylam"],
+                "guncel": guncel,
+                "tahmin": [],
+            }
+
+        veri = self.hava_durumu(sonuc["il"], sonuc.get("ilce"))
+        veri["durum"] = "cozuldu"
+        veri["sorgu"] = sorgu
+        veri["yontem"] = sonuc["yontem"]
+        return veri
 
 
 if __name__ == "__main__":

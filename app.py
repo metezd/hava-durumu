@@ -181,6 +181,18 @@ def iller():
     return jsonify({"basarili": True, "veri": turkiye_illeri()})
 
 
+@app.get("/ara")
+def ara():
+    sorgu = request.args.get("q", "").strip()
+    if not sorgu:
+        return jsonify({"basarili": False, "hata": "'q' parametresi zorunludur."}), 400
+    try:
+        veri = mgm.hava_durumu_akilli(sorgu)
+        return jsonify({"basarili": True, "veri": veri})
+    except MGMWeatherError as exc:
+        return _hata_yanit(exc, 404)
+
+
 @app.get("/istasyonlar/<il>")
 def istasyonlar(il: str):
     try:

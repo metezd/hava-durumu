@@ -41,6 +41,9 @@ curl "http://127.0.0.1:5000/hava-durumu/Istanbul?ilce=Bakirkoy"
 
 Tüm endpoint'ler, parametreler ve şema: **`/docs`** (Swagger UI)
 
+Yazım hatası/karmaşık girdi toleranslı arama için `/ara?q=...` de var —
+`"kadikoy/istanbul"`, `"maslak itü"` gibi serbest metinleri çözer.
+
 Türkçe karakter problemi olursa Türkçe karakter kullanmayın. Örn: (`Istanbul`, `Bakirkoy`)
 
 ## Daha fazlası

@@ -43,6 +43,53 @@ paths:
                     items:
                       $ref: "#/components/schemas/Il"
 
+  /ara:
+    get:
+      tags: [hava-durumu]
+      summary: Serbest metin sorgusuyla hava durumu (yazım hatası/karmaşık girdi)
+      description: >
+        `"kadıköy"`, `"kadikoy"`, `"kadikoy/istanbul"`, `"maslak itü"` gibi
+        eksik veya hatalı Türkçe karakterli ya da il+ilçe'yi tek metinde birleşik
+        veren girdileri çözer. Katmanlı çalışır: önce 81 il listesiyle
+        tam eşleşmeye bakar, sonra `/`, `,` veya boşlukla
+        ayrılmış parçalardan il+ilçe çıkarıp MGM'ye doğrudan sorar, hâlâ
+        çözemezse key gerektirmeyen Open-Meteo geocoding servisine düşer. 
+        Yanıttaki `yontem` alanı hangi katmanın çözdüğünü gösterir.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Serbest metin yer sorgusu
+          schema:
+            type: string
+            example: "maslak itü"
+      responses:
+        "200":
+          description: >
+            Çözüldü ya da belirsiz
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    oneOf:
+                      - $ref: "#/components/schemas/AramaCozuldu"
+                      - $ref: "#/components/schemas/AramaBelirsiz"
+        "400":
+          description: "'q' parametresi eksik ya da boş"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HataYaniti"
+        "404":
+          description: Sorgu hiçbir yere çözümlenemedi
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HataYaniti"
+
   /istasyonlar/{il}:
     get:
       tags: [iller]
@@ -297,6 +344,41 @@ components:
           items: { $ref: "#/components/schemas/GunlukTahmin" }
         gunDogumu: { type: string, nullable: true, example: "06:12" }
         gunBatimi: { type: string, nullable: true, example: "19:48" }
+
+    AramaCozuldu:
+      allOf:
+        - $ref: "#/components/schemas/HavaDurumuOzeti"
+        - type: object
+          properties:
+            durum: { type: string, enum: [cozuldu], example: cozuldu }
+            sorgu: { type: string, example: "maslak itü" }
+            yontem:
+              type: string
+              enum: [il-eslesme, il-ilce-parcalama, geocoding-mgm, geocoding-dogrudan]
+              description: >
+                il-eslesme/il-ilce-parcalama: MGM üzerinden tam hava_durumu
+                yanıtı. geocoding-mgm: Open-Meteo geocoding ile bulunan
+                il/ilçe MGM'de de doğrulandı. geocoding-dogrudan: MGM'de
+                karşılığı yok (ör. resmi ilçe olmayan bir mahalle),
+                `guncel` doğrudan Open-Meteo'dan; `tahmin` boş liste.
+              example: geocoding-dogrudan
+
+    AramaBelirsiz:
+      type: object
+      properties:
+        durum: { type: string, enum: [belirsiz], example: belirsiz }
+        sorgu: { type: string, example: "merkez mahallesi" }
+        secenekler:
+          type: array
+          description: Farklı illerde birden fazla makul aday bulundu; tahmin yürütülmedi.
+          items:
+            type: object
+            properties:
+              yer: { type: string, example: Merkez }
+              il: { type: string, example: Konya }
+              ulke: { type: string, example: Türkiye }
+              enlem: { type: number, example: 37.87 }
+              boylam: { type: number, example: 32.49 }
 
     SaglikDurumu:
       type: object

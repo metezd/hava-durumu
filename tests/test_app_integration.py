@@ -42,6 +42,28 @@ class FakeMGM:
     def saatlik_tahmin(self, istasyon_id: int | str):
         return [{"gun": "2026-08-14", "saat": "12:00", "sicaklik": 27.0}]
 
+    def hava_durumu_akilli(self, sorgu: str):
+        if sorgu == "bulunamayan sorgu":
+            raise MGMWeatherError(f"'{sorgu}' herhangi bir yere çözümlenemedi.")
+        if sorgu == "belirsiz sorgu":
+            return {
+                "durum": "belirsiz",
+                "sorgu": sorgu,
+                "secenekler": [
+                    {"yer": "Merkez", "il": "Konya"},
+                    {"yer": "Merkez", "il": "Sivas"},
+                ],
+            }
+        return {
+            "durum": "cozuldu",
+            "sorgu": sorgu,
+            "yontem": "il-eslesme",
+            "il": "İstanbul",
+            "ilce": "Bakırköy",
+            "guncel": {"sicaklik": 27.1, "durum": "Çok Bulutlu", "kaynak": "mgm"},
+            "tahmin": [{"tarih": "2026-08-14", "durum": "Parçalı Bulutlu"}],
+        }
+
 
 class TestAppIntegration(unittest.TestCase):
     def setUp(self):
@@ -123,6 +145,36 @@ class TestAppIntegration(unittest.TestCase):
         resp = self.client.get("/iller")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(len(resp.get_json()["veri"]), 81)
+
+    def test_ara_basarili_sorgu_hava_durumu_doner(self):
+        resp = self.client.get("/ara?q=istanbul")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data["basarili"])
+        self.assertEqual(data["veri"]["durum"], "cozuldu")
+        self.assertEqual(data["veri"]["guncel"]["kaynak"], "mgm")
+
+    def test_ara_q_parametresi_yoksa_400_doner(self):
+        resp = self.client.get("/ara")
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.get_json()["basarili"])
+
+    def test_ara_bos_q_400_doner(self):
+        resp = self.client.get("/ara?q=")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_ara_cozulemeyen_sorgu_404_doner(self):
+        resp = self.client.get("/ara?q=bulunamayan+sorgu")
+        self.assertEqual(resp.status_code, 404)
+        self.assertFalse(resp.get_json()["basarili"])
+
+    def test_ara_belirsiz_sorgu_200_ile_secenek_doner(self):
+        resp = self.client.get("/ara?q=belirsiz+sorgu")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data["basarili"])
+        self.assertEqual(data["veri"]["durum"], "belirsiz")
+        self.assertEqual(len(data["veri"]["secenekler"]), 2)
 
     def test_openapi_yaml_gecerli_yaml_doner(self):
         resp = self.client.get("/openapi.yaml")

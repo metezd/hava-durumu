@@ -659,5 +659,213 @@ class TestIlceDogrudanSorgu(unittest.TestCase):
         self.assertIn("Bakırköy", mesaj)
 
 
+class _AkilliAramaSession:
+    """/ara için gereken tüm dış servisleri tek bir sahte
+    oturumda birleştirir. Her testin ihtiyacına göre `merkezler_davranisi`
+    ve `geocode_sonucu` enjekte edilir."""
+
+    def __init__(self, merkezler_davranisi=None, geocode_sonucu=None):
+        # merkezler_davranisi: {(il, ilce_veya_None): [kayit, ...]}
+        self.merkezler_davranisi = merkezler_davranisi or {}
+        self.geocode_sonucu = geocode_sonucu if geocode_sonucu is not None else []
+        self.calls: list[tuple] = []
+
+    def get(self, url, params=None, **kwargs):
+        params = dict(params or {})
+        self.calls.append((url, params))
+        if "geocoding-api.open-meteo.com" in url:
+            return _DummyResponse({"results": self.geocode_sonucu})
+        if "merkezler" in url:
+            anahtar = (params.get("il"), params.get("ilce"))
+            return _DummyResponse(self.merkezler_davranisi.get(anahtar, []))
+        if "sondurumlar" in url:
+            return _DummyResponse([{"sicaklik": 20.0, "hadiseKodu": "A", "veriZamani": "x"}])
+        if "tahminler/gunluk" in url:
+            return _DummyResponse([])
+        if "sunrise-sunset" in url:
+            return _DummyResponse(
+                {"results": {"sunrise": "2026-08-15T03:00:00+00:00", "sunset": "2026-08-15T16:00:00+00:00"}}
+            )
+        if "api.open-meteo.com" in url:  # güncel durum
+            return _DummyResponse(_open_meteo_basarili_yuk())
+        raise AssertionError(f"Beklenmeyen URL: {url} params={params}")
+
+
+class TestAkilliAramaCozumleyici(unittest.TestCase):
+    """akilli_yer_bul()'un üç katmanını (tam eşleşme, parçalama, geocoding)
+    ve belirsizlik/bulunamama durumlarını test eder."""
+
+    def test_katman1_tam_eslesme_ag_istegi_atmadan_cozulur(self):
+        session = _AkilliAramaSession()
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.akilli_yer_bul("istanbul")
+        self.assertEqual(sonuc, {"durum": "cozuldu", "yontem": "il-eslesme", "il": "İstanbul", "ilce": None})
+        self.assertEqual(session.calls, [])  # tier 1: hiç ağ isteği yok
+
+    def test_katman1_typo_toleransli_calisir(self):
+        session = _AkilliAramaSession()
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.akilli_yer_bul("istambul")  # typo
+        self.assertEqual(sonuc["il"], "İstanbul")
+
+    def test_katman2_parcalama_ile_ilce_dogrudan_mgmye_gonderilir(self):
+        session = _AkilliAramaSession(
+            merkezler_davranisi={
+                ("istanbul", "kadikoy"): [
+                    {"il": "İstanbul", "ilce": "Kadıköy", "istasyonId": 93409,
+                     "enlem": 40.99, "boylam": 29.02}
+                ],
+            }
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.akilli_yer_bul("kadikoy/istanbul")
+        self.assertEqual(sonuc["durum"], "cozuldu")
+        self.assertEqual(sonuc["yontem"], "il-ilce-parcalama")
+        self.assertEqual(sonuc["il"], "İstanbul")
+        self.assertEqual(sonuc["ilce"], "Kadıköy")
+        # il ve ilce doğru sırada olsa da olmasa da (kadikoy/istanbul VE
+        # istanbul/kadikoy) çözülebilmeli
+        sonuc2 = client.akilli_yer_bul("istanbul kadikoy")
+        self.assertEqual(sonuc2["ilce"], "Kadıköy")
+
+    def test_katman3_geocoding_mgmde_bulunan_ilceyle_cozulur(self):
+        session = _AkilliAramaSession(
+            merkezler_davranisi={
+                ("istanbul", "besiktas"): [
+                    {"il": "İstanbul", "ilce": "Beşiktaş", "istasyonId": 93410,
+                     "enlem": 41.04, "boylam": 29.01}
+                ],
+            },
+            geocode_sonucu=[
+                {"name": "Beşiktaş", "admin1": "İstanbul", "country": "Türkiye",
+                 "country_code": "TR", "latitude": 41.04, "longitude": 29.01},
+            ],
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.akilli_yer_bul("besiktass")  # tier1/2 çözemez, geocoding devreye girer
+        self.assertEqual(sonuc["durum"], "cozuldu")
+        self.assertEqual(sonuc["yontem"], "geocoding-mgm")
+        self.assertEqual(sonuc["il"], "İstanbul")
+        self.assertEqual(sonuc["ilce"], "Beşiktaş")
+
+    def test_katman3_mgmde_olmayan_mahalle_dogrudan_open_meteoya_duser(self):
+        session = _AkilliAramaSession(
+            merkezler_davranisi={},  # MGM Maslak'ı hiç tanımıyor
+            geocode_sonucu=[
+                {"name": "Maslak", "admin1": "İstanbul", "country": "Türkiye",
+                 "country_code": "TR", "latitude": 41.11, "longitude": 29.02},
+            ],
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.akilli_yer_bul("maslak itü")
+        self.assertEqual(sonuc["durum"], "cozuldu")
+        self.assertEqual(sonuc["yontem"], "geocoding-dogrudan")
+        self.assertEqual(sonuc["il"], "İstanbul")
+        self.assertEqual(sonuc["ilce"], "Maslak")
+        self.assertEqual(sonuc["enlem"], 41.11)
+
+    def test_farkli_illerde_birden_fazla_aday_belirsiz_doner(self):
+        session = _AkilliAramaSession(
+            geocode_sonucu=[
+                {"name": "Merkez", "admin1": "Konya", "country": "Türkiye",
+                 "country_code": "TR", "latitude": 37.87, "longitude": 32.49},
+                {"name": "Merkez", "admin1": "Sivas", "country": "Türkiye",
+                 "country_code": "TR", "latitude": 39.75, "longitude": 37.02},
+            ],
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.akilli_yer_bul("merkez mahallesi")
+        self.assertEqual(sonuc["durum"], "belirsiz")
+        self.assertEqual(len(sonuc["secenekler"]), 2)
+        self.assertNotIn("il", sonuc)
+
+    def test_hicbir_katman_cozemezse_bulunamadi_doner(self):
+        session = _AkilliAramaSession(geocode_sonucu=[])
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.akilli_yer_bul("tamamen anlamsiz bir sorgu xyzq")
+        self.assertEqual(sonuc["durum"], "bulunamadi")
+
+    def test_bos_sorgu_bulunamadi_doner(self):
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = _AkilliAramaSession()
+        self.assertEqual(client.akilli_yer_bul("   ")["durum"], "bulunamadi")
+
+
+class TestHavaDurumuAkilli(unittest.TestCase):
+    """hava_durumu_akilli()'nin akilli_yer_bul() sonucunu gerçek hava
+    durumu verisine çevirdiğini uçtan uca doğrular."""
+
+    def test_mgm_uzerinden_cozulen_sorguda_tam_hava_durumu_doner(self):
+        session = _AkilliAramaSession(
+            merkezler_davranisi={
+                ("istanbul", None): [
+                    {"il": "İstanbul", "ilce": "Bakırköy", "istasyonId": 93401,
+                     "enlem": 40.98, "boylam": 28.82}
+                ],
+            }
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.hava_durumu_akilli("istanbul")
+        self.assertEqual(sonuc["durum"], "cozuldu")
+        self.assertEqual(sonuc["yontem"], "il-eslesme")
+        self.assertEqual(sonuc["sorgu"], "istanbul")
+        self.assertEqual(sonuc["guncel"]["kaynak"], "mgm")
+        self.assertIn("tahmin", sonuc)
+
+    def test_dogrudan_koordinatla_cozulen_sorguda_sadece_guncel_doner(self):
+        session = _AkilliAramaSession(
+            geocode_sonucu=[
+                {"name": "Maslak", "admin1": "İstanbul", "country": "Türkiye",
+                 "country_code": "TR", "latitude": 41.11, "longitude": 29.02},
+            ],
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.hava_durumu_akilli("maslak itü")
+        self.assertEqual(sonuc["durum"], "cozuldu")
+        self.assertEqual(sonuc["yontem"], "geocoding-dogrudan")
+        self.assertEqual(sonuc["guncel"]["kaynak"], "open-meteo")
+        self.assertEqual(sonuc["tahmin"], [])
+
+    def test_belirsiz_durumda_hava_durumu_getirmeden_secenek_doner(self):
+        session = _AkilliAramaSession(
+            geocode_sonucu=[
+                {"name": "Merkez", "admin1": "Konya", "country": "Türkiye",
+                 "country_code": "TR", "latitude": 37.87, "longitude": 32.49},
+                {"name": "Merkez", "admin1": "Sivas", "country": "Türkiye",
+                 "country_code": "TR", "latitude": 39.75, "longitude": 37.02},
+            ],
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.hava_durumu_akilli("merkez mahallesi")
+        self.assertEqual(sonuc["durum"], "belirsiz")
+        self.assertNotIn("guncel", sonuc)
+
+    def test_cozulemezse_hata_firlatir(self):
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = _AkilliAramaSession(geocode_sonucu=[])
+        with self.assertRaises(MGMWeatherError):
+            client.hava_durumu_akilli("tamamen anlamsiz xyzq")
+
+
 if __name__ == "__main__":
     unittest.main()

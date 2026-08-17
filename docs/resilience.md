@@ -105,6 +105,24 @@ doğrudan sorgulayın; MGM'nin ilçe adlarını topluca listeleyen bilinen bir
 uç noktası yok, bu yüzden "bu ilde hangi ilçeler var" sorusunu bu API
 üzerinden yanıtlayamayız.
 
+## Akıllı arama (`/ara`) katmanlı çözümleme
+
+`/ara?q=...` gerçek ML/embedding tabanlı bir "semantik arama" değil.
+Daha hafif, üç katmanlı bir çözümleyici (`akilli_yer_bul`):
+
+1. Tam eşleşme: sorgunun tamamı 81 il listesinden biriyle stdlib
+   `difflib` ile eşleşiyorsa anında çözülür, ağ isteği
+   yok.
+2. Parçalama: `/`, `,` ya da boşlukla ayrılmış girdilerde
+   (`"kadikoy/istanbul"`) bir parça bilinen bir ile yakınsa, kalan
+   parça(lar) ilçe adayı olarak doğrudan MGM'ye sorulur.
+3. Geocoding: ilk iki katman çözemezse, sorgu key gerektirmeyen Open-Meteo
+   API'sine gönderilir. Dönen en iyi aday önce MGM'de il+ilçe
+   olarak denenir eğer MGM'de yoksa doğrudan o koordinatla Open-Meteo'dan güncel durum döner bu durumda `tahmin` boş liste olur
+
+Geocoding, ilk birkaç sonuçta farklı illere yayılan adaylar bulursa tahmin
+yürütmek yerine `durum: "belirsiz"` ile bir seçenek listesi döner.
+
 ## Tüm ortam değişkenleri
 
 **MGM istemcisi (timeout / retry):**
