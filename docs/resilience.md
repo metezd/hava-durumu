@@ -117,8 +117,13 @@ Daha hafif, üç katmanlı bir çözümleyici (`akilli_yer_bul`):
    (`"kadikoy/istanbul"`) bir parça bilinen bir ile yakınsa, kalan
    parça(lar) ilçe adayı olarak doğrudan MGM'ye sorulur.
 3. Geocoding: ilk iki katman çözemezse, sorgu key gerektirmeyen Open-Meteo
-   API'sine gönderilir. Dönen en iyi aday önce MGM'de il+ilçe
-   olarak denenir eğer MGM'de yoksa doğrudan o koordinatla Open-Meteo'dan güncel durum döner bu durumda `tahmin` boş liste olur
+   API'sine gönderilir. Önce sorgunun **tamamı** tek bir yer adı olarak
+   denenir ardından canlıda görüldü ki bileşik girdiler (`"maslak itü"`) böyle
+   tek parça sorgulandığında sıfır sonuç dönebiliyorsa tam sorgu boş dönerse kelimeler tek tek denenir (`"maslak"` tek
+   başına bulunur), ilk sonuç veren kelime kullanılır. Dönen en iyi aday
+   önce MGM'de il+ilçe olarak denenir; MGM'de yoksa doğrudan o
+   koordinatla Open-Meteo'dan güncel durum döner, bu durumda `tahmin`
+   boş liste olur.
 
 Geocoding, ilk birkaç sonuçta farklı illere yayılan adaylar bulursa tahmin
 yürütmek yerine `durum: "belirsiz"` ile bir seçenek listesi döner.

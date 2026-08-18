@@ -1087,11 +1087,26 @@ class MGMWeather:
                     "ilce": istasyon.get("ilce", ilce_adayi),
                 }
 
-        # Katman 3: geocoding (typo/semantik — "maslak itü" gibi girdiler)
+        # Katman 3: geocoding (typo/semantik "maslak itü" gibi girdiler)
         try:
             adaylar = self._open_meteo_geocode(sorgu)
         except MGMWeatherError:
             adaylar = []
+
+        if not adaylar:
+            # GeoNames'te "maslak itü" gibi birleşik bir kayıt yoktur. 
+            # Kelimeleri tek tek deneyin sonra ilk sonuç veren
+            # kelimeyi kullanın. 2 karakterden kısa kelimeler atlanır.
+            for parca in self._sorguyu_parcala(sorgu):
+                if len(parca) < 3:
+                    continue
+                try:
+                    parca_adaylari = self._open_meteo_geocode(parca)
+                except MGMWeatherError:
+                    parca_adaylari = []
+                if parca_adaylari:
+                    adaylar = parca_adaylari
+                    break
 
         tr_adaylar = [a for a in adaylar if a.get("country_code") == "TR"]
         adaylar = tr_adaylar or adaylar
@@ -1099,7 +1114,7 @@ class MGMWeather:
             return {"durum": "bulunamadi", "sorgu": sorgu}
 
         # İlk birkaç aday farklı illere yayılıyorsa gerçekten belirsiz
-        # demektir — tahmin yürütmek yerine seçenek sunuyoruz.
+        # demektir, tahmin yürütmek yerine seçenek sunuyoruz.
         farkli_iller = {a.get("admin1") for a in adaylar[:3] if a.get("admin1")}
         if len(farkli_iller) > 1:
             return {
@@ -1134,8 +1149,7 @@ class MGMWeather:
                 except MGMWeatherError:
                     pass
 
-        # MGM'de çözülemedi (örn. resmi ilçe olmayan bir mahalle) ama
-        # geocoding bir koordinat verdi — doğrudan Open-Meteo'ya düş.
+        # MGM'de çözülemedi ama geocoding bir koordinat verdi ise doğrudan Open-Meteo'ya düşer.
         enlem, boylam = en_iyi.get("latitude"), en_iyi.get("longitude")
         if enlem is not None and boylam is not None:
             return {

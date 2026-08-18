@@ -662,18 +662,25 @@ class TestIlceDogrudanSorgu(unittest.TestCase):
 class _AkilliAramaSession:
     """/ara için gereken tüm dış servisleri tek bir sahte
     oturumda birleştirir. Her testin ihtiyacına göre `merkezler_davranisi`
-    ve `geocode_sonucu` enjekte edilir."""
+    ve `geocode_sonucu`/`geocode_sorgu_bazli` enjekte edilir."""
 
-    def __init__(self, merkezler_davranisi=None, geocode_sonucu=None):
+    def __init__(self, merkezler_davranisi=None, geocode_sonucu=None, geocode_sorgu_bazli=None):
         # merkezler_davranisi: {(il, ilce_veya_None): [kayit, ...]}
+        # geocode_sorgu_bazli verilirse (sorgu_metni -> sonuç_listesi)
+        # geocode_sonucu'ndan önceliklidir, sorgu metnine göre farklı
+        # yanıt dönmek gerektiğinde kullanılır.
         self.merkezler_davranisi = merkezler_davranisi or {}
         self.geocode_sonucu = geocode_sonucu if geocode_sonucu is not None else []
+        self.geocode_sorgu_bazli = geocode_sorgu_bazli or {}
         self.calls: list[tuple] = []
 
     def get(self, url, params=None, **kwargs):
         params = dict(params or {})
         self.calls.append((url, params))
         if "geocoding-api.open-meteo.com" in url:
+            sorgu_metni = params.get("name")
+            if sorgu_metni in self.geocode_sorgu_bazli:
+                return _DummyResponse({"results": self.geocode_sorgu_bazli[sorgu_metni]})
             return _DummyResponse({"results": self.geocode_sonucu})
         if "merkezler" in url:
             anahtar = (params.get("il"), params.get("ilce"))
@@ -773,6 +780,45 @@ class TestAkilliAramaCozumleyici(unittest.TestCase):
         self.assertEqual(sonuc["il"], "İstanbul")
         self.assertEqual(sonuc["ilce"], "Maslak")
         self.assertEqual(sonuc["enlem"], 41.11)
+
+    def test_katman3_birlesik_sorgu_bos_donerse_tek_kelime_denenir(self):
+        """Regresyon: canlıda 'maslak itü' Open-Meteo'da birleşik metin
+        olarak hiç sonuç vermiyordu (GeoNames'te böyle bir kayıt yok —
+        İTÜ bir kurum, yer adı değil). Tam sorgu boş dönerse kelimeler
+        tek tek denenmeli; 'maslak' tek başına bulunmalı."""
+        session = _AkilliAramaSession(
+            merkezler_davranisi={},
+            geocode_sorgu_bazli={
+                "maslak itü": [],  # gerçek Open-Meteo davranışı: birleşik sonuç yok
+                "maslak": [
+                    {"name": "Maslak", "admin1": "İstanbul", "country": "Türkiye",
+                     "country_code": "TR", "latitude": 41.11, "longitude": 29.02},
+                ],
+            },
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.akilli_yer_bul("maslak itü")
+        self.assertEqual(sonuc["durum"], "cozuldu")
+        self.assertEqual(sonuc["yontem"], "geocoding-dogrudan")
+        self.assertEqual(sonuc["il"], "İstanbul")
+        self.assertEqual(sonuc["ilce"], "Maslak")
+
+        # Hem 'maslak itü' hem 'maslak' için geocoding çağrıldığını doğrula
+        geocode_sorgulari = [
+            c[1].get("name") for c in session.calls if "geocoding-api" in c[0]
+        ]
+        self.assertIn("maslak itü", geocode_sorgulari)
+        self.assertIn("maslak", geocode_sorgulari)
+
+    def test_katman3_hicbir_kelime_bulunamazsa_bulunamadi_doner(self):
+        session = _AkilliAramaSession(geocode_sorgu_bazli={})  # her sorguda boş
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.akilli_yer_bul("tamamen anlamsiz bir sorgu xyzq")
+        self.assertEqual(sonuc["durum"], "bulunamadi")
 
     def test_farkli_illerde_birden_fazla_aday_belirsiz_doner(self):
         session = _AkilliAramaSession(
