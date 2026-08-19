@@ -156,6 +156,30 @@ Daha hafif, üç katmanlı bir çözümleyici (`akilli_yer_bul`):
 Geocoding, ilk birkaç sonuçta farklı illere yayılan adaylar bulursa tahmin
 yürütmek yerine `durum: "belirsiz"` ile bir seçenek listesi döner.
 
+## Meteorolojik uyarılar (`/uyarilar`) - deneysel
+
+Bu projede daha önce tam da bu tür bir "görmediğimiz veriyi tahmin ederek
+dönüştürme" hatası yaşandı `ilce_istasyonu`'nun eski client-side
+filtreleme mantığı, MGM'de gerçekten var olan ilçeleri
+yanlışlıkla "bulunamadı" gösteriyordu. Aynı hatayı burada tekrarlamamak
+için `uyarilar()` **hiçbir alan adını tahmin etmiyor**
+
+MGM'nin resmi MeteoUYARI sistemi (bkz. mgm.gov.tr/meteouyari) şu
+kavramsal şemayı kullanıyor ama bunların MGM'nin JSON yanıtındaki
+gerçek alan adları henüz doğrulanmadı:
+
+- **Şiddet:** Yeşil (tehlike yok) → Sarı (az tehlikeli) → Turuncu
+  (tehlikeli) → Kırmızı (çok tehlikeli)
+- **Hadise tipi:** Soğuk, Sıcak, Sis, Zirai Don, Buzlanma ve Don, Toz
+  Taşınımı, Kar Erimesi, Çığ, Kar, Gökgürültülü Sağanak Yağış, Rüzgar,
+  Yağmur
+- **Kapsam:** Bugün + Yarın, il/ilçe bazlı.
+
+`il` query parametresi MGM'ye doğrudan iletilir ama filtrenin MGM
+tarafında gerçekten çalışıp çalışmadığı doğrulanamadı (aktif uyarı
+olmadan test edilemedi) — zararsız bir passthrough, MGM parametreyi yok
+sayarsa en kötü ihtimalle filtresiz sonuçla aynı şeyi alırsınız.
+
 ## Tüm ortam değişkenleri
 
 **MGM istemcisi (timeout / retry):**

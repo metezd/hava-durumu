@@ -971,5 +971,66 @@ class TestGuncelDurumDinamikTTL(unittest.TestCase):
                 self.assertEqual(kwargs.get("ttl_override"), 999)
 
 
+class _UyariSession:
+    """merkezler gibi diğer uçlara dokunmayan, sadece
+    alarmlar isteklerini kaydeden minimal sahte oturum."""
+
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls: list[tuple] = []
+
+    def get(self, url, params=None, **kwargs):
+        self.calls.append((url, dict(params or {})))
+        return _DummyResponse(self.payload)
+
+
+class TestUyarilar(unittest.TestCase):
+    """uyarilar()'ın MGM şemasını tahmin etmeden ham geçiş yaptığını,
+    il parametresini doğru ilettiğini/iletmediğini doğrular. Gerçek bir
+    uyarı örneği görmediğimiz için alan bazlı bir dönüşüm YOK
+    """
+
+    def test_bos_liste_donerse_ham_bos_liste_ve_not_iceriyor(self):
+        session = _UyariSession([])
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.uyarilar()
+        self.assertEqual(sonuc["ham"], [])
+        self.assertIn("not", sonuc)
+        self.assertIn("bu kodun yazıldığı sıradaki", sonuc["not"])
+
+    def test_il_verilmezse_parametresiz_istek_atilir(self):
+        session = _UyariSession([])
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        client.uyarilar()
+        _, params = session.calls[0]
+        self.assertNotIn("il", params)
+
+    def test_il_verilirse_mgmye_dogrudan_parametre_olarak_gonderilir(self):
+        session = _UyariSession([])
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        client.uyarilar("İstanbul")
+        _, params = session.calls[0]
+        self.assertEqual(params.get("il"), "istanbul")
+
+    def test_dolu_veri_donerse_donusturmeden_oldugu_gibi_gecer(self):
+        # MGM'nin gerçek alan adlarını bilmiyoruz; kasıtlı olarak
+        # "bilmediğimiz" alan adlarıyla bir örnek veriyoruz
+        mgm_ham_ornek = [
+            {"bilinmeyenAlan1": "sarı", "bilinmeyenAlan2": "fırtına", "il": "Rize"}
+        ]
+        session = _UyariSession(mgm_ham_ornek)
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.uyarilar()
+        self.assertEqual(sonuc["ham"], mgm_ham_ornek)  # birebir aynı, dönüşüm yok
+
+
 if __name__ == "__main__":
     unittest.main()

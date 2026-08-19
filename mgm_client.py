@@ -759,6 +759,45 @@ class MGMWeather:
         """Circuit breaker durumunu döndürür: kapali|acik|yari-acik."""
         return {"durum": self._circuit_breaker.durum()}
 
+    def uyarilar(self, il: str | None = None) -> dict[str, Any]:
+        """
+        MGM'nin meteorolojik uyarı (MeteoUYARI) verisini döndürür.
+
+        ÖNEMLİ sbu metod diğerlerinden (guncel_durum, gunluk_tahmin vb.)
+        farklı çalışır: MGM'nin `alarmlar` uç noktasının ham JSON
+        şemasını, bu kodun yazıldığı sırada aktif bir uyarı bulunmadığı
+        için sDOĞRULAYAMADIK. Bu yüzden veriyi
+        dönüştürmeden, MGM'den geldiği gibi ham olarak döndürür — alan
+        adlarını tahmin ederek Türkçeleştirmeye/yeniden şekillendirmeye
+        ÇALIŞMAZ. Sebep: bu projede daha önce tam da bu tür bir tahmin
+        (ilce_istasyonu'nun eski client-side filtreleme mantığı) yanlış
+        çıkıp gerçek verileri "bulunamadı" göstermişti — aynı hatayı
+        görmediğimiz bir şema üzerinde tekrarlamamak için ham geçiş
+        tercih edildi.
+
+        `il` verilirse MGM'ye doğrudan parametre olarak iletilir (MGM'nin
+        bunu destekleyip desteklemediği, filtrenin gerçekte çalışıp
+        çalışmadığı doğrulanamadı — zararsız bir passthrough'tur, MGM
+        parametreyi yok sayarsa en kötü ihtimalle filtresiz sonuçla aynı
+        şeyi alırsınız).
+
+        Gerçek bir uyarı aktifken bu metod tekrar çalıştırılıp MGM'nin
+        döndürdüğü gerçek alan adları görülmeli; ancak o zaman anlamlı
+        bir Türkçe şema/dönüşüm katmanı eklemek güvenli olur.
+        """
+        params: dict[str, Any] = {}
+        if il:
+            params["il"] = _tr_normalize(il)
+        data = self._get("alarmlar", params or None)
+        return {
+            "ham": data if data is not None else [],
+            "not": (
+                "MGM'nin şu anki (bu kodun yazıldığı sıradaki) yanıtı boştu "
+                "çünkü aktif bir uyarı yoktu; alan adları bu yüzden ham "
+                "olarak geçiliyor, doğrulanmış bir şema/dönüşüm henüz yok."
+            ),
+        }
+
     def il_istasyonlari(self, il: str) -> list[dict[str, Any]]:
         """
         Bir il adına göre MGM'nin döndürdüğü istasyon(lar)ı döndürür.

@@ -202,6 +202,15 @@ def ara():
         return _hata_yanit(exc, 404)
 
 
+@app.get("/uyarilar")
+def uyarilar():
+    il = request.args.get("il")
+    try:
+        return jsonify({"basarili": True, "veri": mgm.uyarilar(il)})
+    except MGMWeatherError as exc:
+        return _hata_yanit(exc, 502)
+
+
 @app.get("/istasyonlar/<il>")
 def istasyonlar(il: str):
     try:

@@ -64,6 +64,11 @@ class FakeMGM:
             "tahmin": [{"tarih": "2026-08-14", "durum": "Parçalı Bulutlu"}],
         }
 
+    def uyarilar(self, il: str | None = None):
+        if il == "coken-il":
+            raise MGMWeatherError("MGM'ye ulaşılamadı (simülasyon).")
+        return {"ham": [], "not": "test notu"}
+
 
 class TestAppIntegration(unittest.TestCase):
     def setUp(self):
@@ -175,6 +180,23 @@ class TestAppIntegration(unittest.TestCase):
         self.assertTrue(data["basarili"])
         self.assertEqual(data["veri"]["durum"], "belirsiz")
         self.assertEqual(len(data["veri"]["secenekler"]), 2)
+
+    def test_uyarilar_basarili_ham_ve_not_doner(self):
+        resp = self.client.get("/uyarilar")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data["basarili"])
+        self.assertIn("ham", data["veri"])
+        self.assertIn("not", data["veri"])
+
+    def test_uyarilar_il_parametresiyle_calisir(self):
+        resp = self.client.get("/uyarilar?il=istanbul")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_uyarilar_mgm_hatasinda_502_doner(self):
+        resp = self.client.get("/uyarilar?il=coken-il")
+        self.assertEqual(resp.status_code, 502)
+        self.assertFalse(resp.get_json()["basarili"])
 
     def test_openapi_yaml_gecerli_yaml_doner(self):
         resp = self.client.get("/openapi.yaml")

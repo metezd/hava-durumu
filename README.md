@@ -44,9 +44,12 @@ Tüm endpoint'ler, parametreler ve şema: **`/docs`** (Swagger UI)
 Yazım hatası/karmaşık girdi toleranslı arama için `/ara?q=...` de var —
 `"kadikoy/istanbul"`, `"maslak itü"` gibi serbest metinleri çözer.
 
+`/uyarilar?il=...` (deneysel) MGM'nin meteorolojik uyarı
+verisini ham geçirir.
+
 Türkçe karakter problemi olursa Türkçe karakter kullanmayın. Örn: (`Istanbul`, `Bakirkoy`)
 
 ## Daha fazlası
 
-- [docs/development.md](docs/development.md) — Docker, test/lint/CI, bağımlılık yönetimi
-- [docs/resilience.md](docs/resilience.md) — cache, circuit breaker, Open-Meteo fallback, tüm ortam değişkenleri
+- [docs/development.md](docs/development.md)
+- [docs/resilience.md](docs/resilience.md)

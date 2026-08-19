@@ -18,6 +18,8 @@ tags:
     description: İl/ilçe ve istasyon bilgisi
   - name: hava-durumu
     description: Güncel durum, tahmin, birleşik özet
+  - name: uyarilar
+    description: Meteorolojik uyarılar (deneysel, ham geçiş)
   - name: durum
     description: Servis sağlığı
 
@@ -85,6 +87,61 @@ paths:
                 $ref: "#/components/schemas/HataYaniti"
         "404":
           description: Sorgu hiçbir yere çözümlenemedi
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HataYaniti"
+
+  /uyarilar:
+    get:
+      tags: [uyarilar]
+      summary: Meteorolojik uyarılar (deneysel — MGM şeması doğrulanmadı)
+      description: >
+        MGM'nin meteorolojik uyarı (MeteoUYARI) verisini döndürür. **Önemli
+        sınır:** bu uç nokta diğerlerinden farklıdır — MGM'nin ham JSON
+        şemasını, bu API'nin geliştirildiği sırada Türkiye genelinde aktif
+        bir uyarı bulunmadığı için doğrulayamadık. Bu yüzden veri
+        dönüştürülmeden, MGM'den geldiği gibi `ham` alanı altında döner;
+        alan adlarını tahmin ederek Türkçeleştirme/yeniden şekillendirme
+        yapılmaz. MGM'nin resmi MeteoUYARI sistemi şiddet için
+        Yeşil/Sarı/Turuncu/Kırmızı, hadise tipi için Soğuk/Sıcak/Sis/Zirai
+        Don/Buzlanma ve Don/Toz Taşınımı/Kar Erimesi/Çığ/Kar/Gökgürültülü
+        Sağanak Yağış/Rüzgar/Yağmur kategorilerini kullanıyor (bkz.
+        mgm.gov.tr/meteouyari) — ama bu kategorilerin MGM'nin JSON
+        yanıtındaki gerçek alan adları doğrulanmadan varsayılmadı.
+      parameters:
+        - name: il
+          in: query
+          required: false
+          description: >
+            MGM'ye doğrudan parametre olarak iletilir. Filtrenin MGM
+            tarafında gerçekten desteklenip desteklenmediği doğrulanamadı
+            (aktif uyarı olmadığından test edilemedi) — zararsız bir
+            passthrough'tur.
+          schema:
+            type: string
+            example: istanbul
+      responses:
+        "200":
+          description: MGM'nin ham uyarı verisi (dönüştürülmemiş)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    type: object
+                    properties:
+                      ham:
+                        type: array
+                        description: MGM'den geldiği gibi, dönüştürülmemiş dizi. Aktif uyarı yoksa boş.
+                        items: { type: object }
+                      not:
+                        type: string
+                        description: Şemanın neden doğrulanamadığını açıklayan not.
+        "502":
+          description: MGM'ye ulaşılamadı
           content:
             application/json:
               schema:
