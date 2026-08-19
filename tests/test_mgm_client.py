@@ -914,9 +914,10 @@ class TestHavaDurumuAkilli(unittest.TestCase):
 
 
 class TestGuncelDurumDinamikTTL(unittest.TestCase):
-    """MGM'nin ölçümlerinin saat başından birkaç dakika sonra düştüğü
-    gözlemine görefeat: guncel_durum için saat başına göre dinamik TTL dinamik TTL'in doğru hesaplandığını ve cache_ttl_seconds=0 
-    durumlarında devre dışı kaldığını doğrular."""
+    """MGM'nin ölçümlerinin saat başından birkaç dakika sonra düştüğü gözlemine
+    göre dinamik TTL'in doğru hesaplandığını ve cache_ttl_seconds=0
+    durumlarında devre dışı kaldığını doğrular.
+    """
 
     @staticmethod
     def _sahte_simdi(dakika):
