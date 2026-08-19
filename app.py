@@ -65,6 +65,15 @@ mgm = MGMWeather(
     circuit_breaker_open_seconds=float(
         os.getenv("MGM_CIRCUIT_BREAKER_OPEN_SECONDS", "60")
     ),
+    guncel_dinamik_ttl_aktif=os.getenv("MGM_GUNCEL_DINAMIK_TTL", "1") not in {"0", "false", "False"},
+    guncel_sicak_pencere_baslangic_dk=int(
+        os.getenv("MGM_GUNCEL_SICAK_PENCERE_BASLANGIC_DK", "5")
+    ),
+    guncel_sicak_pencere_bitis_dk=int(
+        os.getenv("MGM_GUNCEL_SICAK_PENCERE_BITIS_DK", "15")
+    ),
+    guncel_sicak_ttl_saniye=int(os.getenv("MGM_GUNCEL_SICAK_TTL_SANIYE", "120")),
+    guncel_soguk_ttl_saniye=int(os.getenv("MGM_GUNCEL_SOGUK_TTL_SANIYE", "1800")),
     redis_url=os.getenv("REDIS_URL") or os.getenv("MGM_REDIS_URL") or None,
     redis_prefix=os.getenv("MGM_REDIS_PREFIX", "mgm-cache:"),
 )

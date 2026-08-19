@@ -27,6 +27,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -327,6 +328,12 @@ class MGMWeather:
     circuit_breaker_failure_threshold: int = CIRCUIT_BREAKER_FAILURE_THRESHOLD
     circuit_breaker_window_seconds: float = CIRCUIT_BREAKER_WINDOW_SECONDS
     circuit_breaker_open_seconds: float = CIRCUIT_BREAKER_OPEN_SECONDS
+    guncel_dinamik_ttl_aktif: bool = True
+    guncel_sicak_pencere_baslangic_dk: int = 5
+    guncel_sicak_pencere_bitis_dk: int = 15
+    guncel_sicak_ttl_saniye: int = 120
+    guncel_soguk_ttl_saniye: int = 1800
+    guncel_zaman_dilimi: str = "Europe/Istanbul"
     redis_url: str | None = None
     redis_prefix: str = "mgm-cache:"
     redis_client: Any | None = None
@@ -437,21 +444,28 @@ class MGMWeather:
         swr = self.stale_while_revalidate_seconds if self._swr_aktif() else 0
         return self.cache_ttl_seconds + swr
 
-    def _cached_get(self, key: str, loader: Callable[[], Any]) -> Any:
+    def _cached_get(
+        self, key: str, loader: Callable[[], Any], ttl_override: float | None = None
+    ) -> Any:
         """Stale-while-revalidate cache akışı.
 
         Kayıt tazeyse (TTL içinde) doğrudan döner. TTL geçmiş ama stale
         penceresi içindeyse eski veriyi anında döner ve arka planda yeniler.
         Pencere de geçtiyse bloklayıcı şekilde yeniden yükler.
+
+        `ttl_override` verilirse `self.cache_ttl_seconds` yerine kullanılır
+        örn. guncel_durum() saat başına göre dinamik TTL uygulamak için
+        bunu kullanır. Diğer tüm çağrılar statik `cache_ttl_seconds`'ta kalır.
         """
+        ttl = self.cache_ttl_seconds if ttl_override is None else ttl_override
         kayit = self._kayit_sec(key)
         if kayit is not None:
             payload, yazilma_zamani = kayit
             yas = time.time() - yazilma_zamani
-            if yas <= self.cache_ttl_seconds:
+            if yas <= ttl:
                 logger.info("Cache hit (taze): %s", key)
                 return payload
-            if self._swr_aktif() and yas <= self._stale_limit_saniye():
+            if self._swr_aktif() and yas <= ttl + self.stale_while_revalidate_seconds:
                 logger.info("Cache hit (stale, arka planda yenileniyor): %s", key)
                 if self._renew_try_lock(key):
                     self._arka_planda_yenile(key, loader)
@@ -462,10 +476,6 @@ class MGMWeather:
 
     def _swr_aktif(self) -> bool:
         return self.stale_while_revalidate_seconds > 0
-
-    def _stale_limit_saniye(self) -> float:
-        """Stale verinin ne kadar süre daha sunulabileceğini verir (tazelik + SWR)."""
-        return self.cache_ttl_seconds + self.stale_while_revalidate_seconds
 
     def _kayit_sec(self, key: str) -> tuple[Any, float] | None:
         """Redis'ten, yoksa bellekten (veri, yazılma zamanı) kaydını döndürür."""
@@ -582,7 +592,12 @@ class MGMWeather:
         )
         thread.start()
 
-    def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+    def _get(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        ttl_override: float | None = None,
+    ) -> Any:
         cache_key = self._cache_key(path, params)
         url = f"{self.BASE_URL}/{path}"
 
@@ -639,7 +654,7 @@ class MGMWeather:
             self._circuit_breaker.basarili()
             return sonuc
 
-        return self._cached_get(cache_key, loader)
+        return self._cached_get(cache_key, loader, ttl_override=ttl_override)
 
     def _cache_key(self, path: str, params: dict[str, Any] | None = None) -> str:
         serialized = json.dumps(params or {}, sort_keys=True, ensure_ascii=False)
@@ -812,9 +827,42 @@ class MGMWeather:
         return istasyonlar[0]
 
     # Güncel durum
+    def _guncel_durum_dinamik_ttl(self) -> float:
+        """
+        guncel_durum() cache'i için saat başına göre değişen TTL.
+        MGM'nin istasyon ölçümlerinin genellikle her saat başından birkaç
+        dakika sonra sisteme düştüğü gözlemine dayanır. Bu bilgi MGM tarafından paylaşılmamıştır
+        bu yüzden varsayılanlar tahminidir ve env değişkenleriyle ayarlanabilirdir
+
+        "Sıcak pencere" içinde kısa TTL kullanılır ki yeni düşen ölçüm hızlı yakalansın 
+        MGM'nin bu aralıkta yeni veri yayınlamadığı
+        varsayımıyla gereksiz revalidation isteği azaltılır. 
+        TTL sonunda hâlâ bir revalidation tetiklenir, sadece çok daha seyrek
+
+        `cache_ttl_seconds<=0` ya da `guncel_dinamik_ttl_aktif=false` ise devre dışı
+        kalır, statik `cache_ttl_seconds` döner
+        """
+        if self.cache_ttl_seconds <= 0 or not self.guncel_dinamik_ttl_aktif:
+            return self.cache_ttl_seconds
+        try:
+            simdi_dk = _dt.datetime.now(ZoneInfo(self.guncel_zaman_dilimi)).minute
+        except (ZoneInfoNotFoundError, OSError) as exc:
+            logger.warning(
+                "Dinamik TTL için saat dilimi çözümlenemedi (%s); statik TTL kullanılıyor.",
+                exc,
+            )
+            return self.cache_ttl_seconds
+        if self.guncel_sicak_pencere_baslangic_dk <= simdi_dk <= self.guncel_sicak_pencere_bitis_dk:
+            return self.guncel_sicak_ttl_saniye
+        return self.guncel_soguk_ttl_saniye
+
     def guncel_durum(self, istasyon_id: int | str) -> dict[str, Any]:
         """Bir istasyon için anlık (güncel) hava durumu verisini döndürür."""
-        data = self._get("sondurumlar", {"merkezid": istasyon_id})
+        data = self._get(
+            "sondurumlar",
+            {"merkezid": istasyon_id},
+            ttl_override=self._guncel_durum_dinamik_ttl(),
+        )
         if not data:
             raise MGMWeatherError(
                 f"{istasyon_id} numaralı istasyon için güncel veri bulunamadı."

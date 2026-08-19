@@ -913,5 +913,62 @@ class TestHavaDurumuAkilli(unittest.TestCase):
             client.hava_durumu_akilli("tamamen anlamsiz xyzq")
 
 
+class TestGuncelDurumDinamikTTL(unittest.TestCase):
+    """MGM'nin ölçümlerinin saat başından birkaç dakika sonra düştüğü
+    gözlemine görefeat: guncel_durum için saat başına göre dinamik TTL dinamik TTL'in doğru hesaplandığını ve cache_ttl_seconds=0 
+    durumlarında devre dışı kaldığını doğrular."""
+
+    @staticmethod
+    def _sahte_simdi(dakika):
+        sahte = MagicMock()
+        sahte.minute = dakika
+        return sahte
+
+    def test_sicak_pencerede_kisa_ttl_doner(self):
+        client = MGMWeather(cache_ttl_seconds=60)
+        with patch("mgm_client._dt.datetime") as mock_dt:
+            mock_dt.now.return_value = self._sahte_simdi(8)  # XX:08
+            self.assertEqual(client._guncel_durum_dinamik_ttl(), client.guncel_sicak_ttl_saniye)
+
+    def test_soguk_pencerede_uzun_ttl_doner(self):
+        client = MGMWeather(cache_ttl_seconds=60)
+        with patch("mgm_client._dt.datetime") as mock_dt:
+            mock_dt.now.return_value = self._sahte_simdi(40)  # XX:40
+            self.assertEqual(client._guncel_durum_dinamik_ttl(), client.guncel_soguk_ttl_saniye)
+
+    def test_pencere_sinirlari_dahildir(self):
+        client = MGMWeather(cache_ttl_seconds=60)
+        with patch("mgm_client._dt.datetime") as mock_dt:
+            mock_dt.now.return_value = self._sahte_simdi(5)  # alt sınır
+            self.assertEqual(client._guncel_durum_dinamik_ttl(), client.guncel_sicak_ttl_saniye)
+            mock_dt.now.return_value = self._sahte_simdi(15)  # üst sınır
+            self.assertEqual(client._guncel_durum_dinamik_ttl(), client.guncel_sicak_ttl_saniye)
+            mock_dt.now.return_value = self._sahte_simdi(16)  # sınır dışı
+            self.assertEqual(client._guncel_durum_dinamik_ttl(), client.guncel_soguk_ttl_saniye)
+
+    def test_cache_kapaliyken_dinamik_ttl_devre_disi(self):
+        client = MGMWeather(cache_ttl_seconds=0)
+        self.assertEqual(client._guncel_durum_dinamik_ttl(), 0)
+
+    def test_ozellik_kapatilirsa_statik_ttl_doner(self):
+        client = MGMWeather(cache_ttl_seconds=60, guncel_dinamik_ttl_aktif=False)
+        self.assertEqual(client._guncel_durum_dinamik_ttl(), 60)
+
+    def test_zaman_dilimi_cozulemezse_guvenle_statige_duser(self):
+        client = MGMWeather(cache_ttl_seconds=60, guncel_zaman_dilimi="Gecersiz/Bolge")
+        self.assertEqual(client._guncel_durum_dinamik_ttl(), 60)
+
+    def test_guncel_durum_dinamik_ttlyi_gete_iletir(self):
+        client = MGMWeather(cache_ttl_seconds=60, timeout=1, retry_total=0)
+        client.session = _CountingSession(
+            [{"sicaklik": 20.0, "hadiseKodu": "A", "veriZamani": "x"}]
+        )
+        with patch.object(client, "_guncel_durum_dinamik_ttl", return_value=999):
+            with patch.object(client, "_get", wraps=client._get) as mock_get:
+                client.guncel_durum(123)
+                _, kwargs = mock_get.call_args
+                self.assertEqual(kwargs.get("ttl_override"), 999)
+
+
 if __name__ == "__main__":
     unittest.main()

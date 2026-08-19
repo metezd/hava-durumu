@@ -3,4 +3,5 @@ flask-compress>=1.15
 pyyaml>=6.0
 redis>=5.0
 requests>=2.31
+tzdata>=2024.1
 waitress>=3.0

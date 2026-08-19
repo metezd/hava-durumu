@@ -57,6 +57,34 @@ döner ve retry/backoff süresi boyunca beklemez.
 Durum `GET /health` yanıtında `circuit_breaker`
 alanıyla görülebilir: `kapali` | `acik` | `yari-acik`
 
+## Saat başına göre dinamik TTL (`guncel_durum`, deneysel)
+
+MGM'nin istasyon ölçümleri gözlemsel olarak genelde her saat başından
+birkaç dakika sonra (örn. 14:08, 15:07) sisteme düşüyor, bu MGM'nin 
+paylaştığı bir bilgi **DEĞİL** bu yüzden aşağıdaki varsayılanlar tahminidir
+
+Sadece `guncel_durum()` etkilenir — il listesi, tahmin, saatlik, geocoding gibi
+farklı güncelleme ritmine sahip veriler bundan etkilenmez, statik
+`MGM_CACHE_TTL`'de kalır
+
+- **Sıcak pencere**: TTL kısa tutulur (`MGM_GUNCEL_SICAK_TTL_SANIYE`,`120`)
+  ki yeni düşen ölçüm hızlı yakalansın.
+- **Soğuk pencere**: TTL uzatılır
+  (`MGM_GUNCEL_SOGUK_TTL_SANIYE`, `1800` = 30 dk) — MGM'nin
+  bu aralıkta yeni veri yayınlamadığı varsayımıyla gereksiz
+  revalidation azaltılır. Not: tamamen durdurulmaz, sadece seyrekleşir
+  — varsayım yanlış çıkarsa veri en fazla 30 dk bayat kalır, sonsuza
+  kadar değil.
+- TTL, cache kaydının yazıldığı anda değil her okunduğu anda o
+  anki saate göre yeniden hesaplanır bu yüzden yeni bir saate
+  geçildiğinde eski kayıt otomatik "bayat" sayılır ve revalidation tetiklenir
+- `MGM_CACHE_TTL=0` ya da `MGM_GUNCEL_DINAMIK_TTL=0`
+  ile devre dışı bırakılabilir; devre dışıyken statik `MGM_CACHE_TTL`
+  kullanılır.
+- Saat dilimi hesaplaması Python'ın stdlib `zoneinfo`'suyla
+  (`Europe/Istanbul`) yapılır.`tzdata` paketi bu yüzden bağımlılıklara
+  eklendi
+
 ## Open-Meteo fallback (sadece anlık durum)
 
 Circuit breaker ve SWR, MGM'nin kısa süreli hatalarını büyük
