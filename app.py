@@ -74,6 +74,10 @@ mgm = MGMWeather(
     ),
     guncel_sicak_ttl_saniye=int(os.getenv("MGM_GUNCEL_SICAK_TTL_SANIYE", "120")),
     guncel_soguk_ttl_saniye=int(os.getenv("MGM_GUNCEL_SOGUK_TTL_SANIYE", "1800")),
+    guncel_gece_baslangic_saat=int(os.getenv("MGM_GUNCEL_GECE_BASLANGIC_SAAT", "0")),
+    guncel_gece_bitis_saat=int(os.getenv("MGM_GUNCEL_GECE_BITIS_SAAT", "6")),
+    guncel_gece_ttl_saniye=int(os.getenv("MGM_GUNCEL_GECE_TTL_SANIYE", "3600")),
+    tahmin_ttl_saniye=int(os.getenv("MGM_TAHMIN_TTL_SANIYE", "10800")),
     redis_url=os.getenv("REDIS_URL") or os.getenv("MGM_REDIS_URL") or None,
     redis_prefix=os.getenv("MGM_REDIS_PREFIX", "mgm-cache:"),
 )

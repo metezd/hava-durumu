@@ -920,9 +920,11 @@ class TestGuncelDurumDinamikTTL(unittest.TestCase):
     """
 
     @staticmethod
-    def _sahte_simdi(dakika):
+    def _sahte_simdi(dakika, saat=12):
+        # Varsayılan saat=12 öğlen seçildi: varsayılan gece penceresinin tamamen dışında
         sahte = MagicMock()
         sahte.minute = dakika
+        sahte.hour = saat
         return sahte
 
     def test_sicak_pencerede_kisa_ttl_doner(self):
@@ -959,6 +961,36 @@ class TestGuncelDurumDinamikTTL(unittest.TestCase):
         client = MGMWeather(cache_ttl_seconds=60, guncel_zaman_dilimi="Gecersiz/Bolge")
         self.assertEqual(client._guncel_durum_dinamik_ttl(), 60)
 
+    def test_gece_penceresinde_en_uzun_ttl_doner(self):
+        client = MGMWeather(cache_ttl_seconds=60)
+        with patch("mgm_client._dt.datetime") as mock_dt:
+            # Saat 03:08 — hem "sıcak pencere" dakikasında (8) hem gece
+            # penceresinde (0-6). Gece önceliklidir.
+            mock_dt.now.return_value = self._sahte_simdi(dakika=8, saat=3)
+            self.assertEqual(client._guncel_durum_dinamik_ttl(), client.guncel_gece_ttl_saniye)
+
+    def test_gece_penceresi_sinirlari_dahildir(self):
+        client = MGMWeather(cache_ttl_seconds=60)
+        with patch("mgm_client._dt.datetime") as mock_dt:
+            mock_dt.now.return_value = self._sahte_simdi(dakika=40, saat=0)  # alt sınır
+            self.assertEqual(client._guncel_durum_dinamik_ttl(), client.guncel_gece_ttl_saniye)
+            mock_dt.now.return_value = self._sahte_simdi(dakika=40, saat=5)  # içeride
+            self.assertEqual(client._guncel_durum_dinamik_ttl(), client.guncel_gece_ttl_saniye)
+            mock_dt.now.return_value = self._sahte_simdi(dakika=40, saat=6)  # üst sınır, dışarıda
+            self.assertEqual(client._guncel_durum_dinamik_ttl(), client.guncel_soguk_ttl_saniye)
+
+    def test_gece_yarisini_saran_ozel_pencere_dogru_calisir(self):
+        client = MGMWeather(
+            cache_ttl_seconds=60, guncel_gece_baslangic_saat=22, guncel_gece_bitis_saat=6
+        )
+        with patch("mgm_client._dt.datetime") as mock_dt:
+            mock_dt.now.return_value = self._sahte_simdi(dakika=40, saat=23)  # 22-06 içinde
+            self.assertEqual(client._guncel_durum_dinamik_ttl(), client.guncel_gece_ttl_saniye)
+            mock_dt.now.return_value = self._sahte_simdi(dakika=40, saat=2)  # 22-06 içinde
+            self.assertEqual(client._guncel_durum_dinamik_ttl(), client.guncel_gece_ttl_saniye)
+            mock_dt.now.return_value = self._sahte_simdi(dakika=40, saat=12)  # dışında
+            self.assertEqual(client._guncel_durum_dinamik_ttl(), client.guncel_soguk_ttl_saniye)
+
     def test_guncel_durum_dinamik_ttlyi_gete_iletir(self):
         client = MGMWeather(cache_ttl_seconds=60, timeout=1, retry_total=0)
         client.session = _CountingSession(
@@ -969,6 +1001,36 @@ class TestGuncelDurumDinamikTTL(unittest.TestCase):
                 client.guncel_durum(123)
                 _, kwargs = mock_get.call_args
                 self.assertEqual(kwargs.get("ttl_override"), 999)
+
+
+class TestTahminAyriTTL(unittest.TestCase):
+    """gunluk_tahmin()/saatlik_tahmin()'in guncel_durum()'dan ayrı, daha
+    uzun bir statik TTL (tahmin_ttl_saniye) kullandığını ve
+    cache_ttl_seconds=0 ile cache tamamen kapatıldığında bu ayrı TTL'in
+    de devre dışı kaldığını (test uyumluluğu için kritik) doğrular."""
+
+    def test_gunluk_tahmin_ayri_ttl_ile_gete_iletir(self):
+        client = MGMWeather(cache_ttl_seconds=60, tahmin_ttl_saniye=12345, timeout=1, retry_total=0)
+        client.session = _CountingSession([{"hadiseGun1": "A"}])
+        with patch.object(client, "_get", wraps=client._get) as mock_get:
+            client.gunluk_tahmin(123)
+            _, kwargs = mock_get.call_args
+            self.assertEqual(kwargs.get("ttl_override"), 12345)
+
+    def test_saatlik_tahmin_ayri_ttl_ile_gete_iletir(self):
+        client = MGMWeather(cache_ttl_seconds=60, tahmin_ttl_saniye=12345, timeout=1, retry_total=0)
+        client.session = _CountingSession([])
+        with patch.object(client, "_get", wraps=client._get) as mock_get:
+            client.saatlik_tahmin(123)
+            _, kwargs = mock_get.call_args
+            self.assertEqual(kwargs.get("ttl_override"), 12345)
+
+    def test_cache_kapaliyken_tahmin_ttli_de_kapanir(self):
+        # Kritik regresyon: cache_ttl_seconds=0 birçok testte "cache'i
+        # kapat" niyetiyle kullanılıyor; tahmin_ttl_saniye'nin kendi
+        # varsayılanı (10800) bu niyeti ezmemeli.
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        self.assertEqual(client._tahmin_ttl(), 0)
 
 
 class _UyariSession:

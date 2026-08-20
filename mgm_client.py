@@ -334,6 +334,11 @@ class MGMWeather:
     guncel_sicak_ttl_saniye: int = 120
     guncel_soguk_ttl_saniye: int = 1800
     guncel_zaman_dilimi: str = "Europe/Istanbul"
+    guncel_gece_baslangic_saat: int = 0
+    guncel_gece_bitis_saat: int = 6
+    guncel_gece_ttl_saniye: int = 3600
+    # gunluk_tahmin/saatlik_tahmin, guncel_durum'dan ayrı ve daha uzun bir TTL kullanır
+    tahmin_ttl_saniye: int = 10800
     redis_url: str | None = None
     redis_prefix: str = "mgm-cache:"
     redis_client: Any | None = None
@@ -866,32 +871,44 @@ class MGMWeather:
         return istasyonlar[0]
 
     # Güncel durum
+    @staticmethod
+    def _saat_araliginda_mi(saat: int, baslangic: int, bitis: int) -> bool:
+        """Gece yarısını saran aralıkları da (örn. 22-06) doğru ele alır."""
+        if baslangic <= bitis:
+            return baslangic <= saat < bitis
+        return saat >= baslangic or saat < bitis
+
     def _guncel_durum_dinamik_ttl(self) -> float:
         """
-        guncel_durum() cache'i için saat başına göre değişen TTL.
-        MGM'nin istasyon ölçümlerinin genellikle her saat başından birkaç
-        dakika sonra sisteme düştüğü gözlemine dayanır. Bu bilgi MGM tarafından paylaşılmamıştır
-        bu yüzden varsayılanlar tahminidir ve env değişkenleriyle ayarlanabilirdir
+        guncel_durum() cache'i için saat başına göre değişen TTL
 
-        "Sıcak pencere" içinde kısa TTL kullanılır ki yeni düşen ölçüm hızlı yakalansın 
-        MGM'nin bu aralıkta yeni veri yayınlamadığı
-        varsayımıyla gereksiz revalidation isteği azaltılır. 
-        TTL sonunda hâlâ bir revalidation tetiklenir, sadece çok daha seyrek
+        İki katman var:
+        1. Gece penceresi: en uzun TTL. Hem gerçek kullanıcı trafiği hem MGM'nin bazı istasyonlarının ölçüm
+           sıklığı muhtemelen düşer — bu da doğrulanmamış bir varsayım,
+           bu yüzden env ile kapatılabilir/ayarlanabilir tutuldu.
+        2. Saat başı sıcak/soğuk pencere: "sıcak
+           pencere" içinde kısa TTL kullanılır ki yeni düşen ölçüm hızlı 
+           yakalansın dışında TTL uzatılır
 
-        `cache_ttl_seconds<=0` ya da `guncel_dinamik_ttl_aktif=false` ise devre dışı
-        kalır, statik `cache_ttl_seconds` döner
+        `cache_ttl_seconds<=0` ya da `guncel_dinamik_ttl_aktif=False` ise
+        devre dışı kalır, statik `cache_ttl_seconds` aynen döner.
         """
         if self.cache_ttl_seconds <= 0 or not self.guncel_dinamik_ttl_aktif:
             return self.cache_ttl_seconds
         try:
-            simdi_dk = _dt.datetime.now(ZoneInfo(self.guncel_zaman_dilimi)).minute
+            simdi = _dt.datetime.now(ZoneInfo(self.guncel_zaman_dilimi))
         except (ZoneInfoNotFoundError, OSError) as exc:
             logger.warning(
                 "Dinamik TTL için saat dilimi çözümlenemedi (%s); statik TTL kullanılıyor.",
                 exc,
             )
             return self.cache_ttl_seconds
-        if self.guncel_sicak_pencere_baslangic_dk <= simdi_dk <= self.guncel_sicak_pencere_bitis_dk:
+
+        if self._saat_araliginda_mi(
+            simdi.hour, self.guncel_gece_baslangic_saat, self.guncel_gece_bitis_saat
+        ):
+            return self.guncel_gece_ttl_saniye
+        if self.guncel_sicak_pencere_baslangic_dk <= simdi.minute <= self.guncel_sicak_pencere_bitis_dk:
             return self.guncel_sicak_ttl_saniye
         return self.guncel_soguk_ttl_saniye
 
@@ -1010,9 +1027,16 @@ class MGMWeather:
             return veri
 
     # Günlük tahmin (5 günlük)
+    def _tahmin_ttl(self) -> float:
+        if self.cache_ttl_seconds <= 0:
+            return self.cache_ttl_seconds
+        return self.tahmin_ttl_saniye
+
     def gunluk_tahmin(self, istasyon_id: int | str) -> list[dict[str, Any]]:
         """Bir istasyon için 5 günlük tahmini gün gün liste olarak döndürür."""
-        data = self._get("tahminler/gunluk", {"istno": istasyon_id})
+        data = self._get(
+            "tahminler/gunluk", {"istno": istasyon_id}, ttl_override=self._tahmin_ttl()
+        )
         if not data:
             raise MGMWeatherError(
                 f"{istasyon_id} numaralı istasyon için tahmin verisi bulunamadı."
@@ -1038,8 +1062,13 @@ class MGMWeather:
 
     # Saatlik tahmin
     def saatlik_tahmin(self, istasyon_id: int | str) -> list[dict[str, Any]]:
-        """Bir istasyon için saatlik tahmin verisini döndürür (mevcutsa)."""
-        data = self._get("tahminler/saatlik", {"istno": istasyon_id})
+        """Bir istasyon için saatlik tahmin verisini döndürür (mevcutsa).
+
+        gunluk_tahmin() gibi _tahmin_ttl() kullanır (bkz. orada).
+        """
+        data = self._get(
+            "tahminler/saatlik", {"istno": istasyon_id}, ttl_override=self._tahmin_ttl()
+        )
         return data or []
 
     # Gün doğumu ve batımı (sunrise-sunset.org üzerinden)
