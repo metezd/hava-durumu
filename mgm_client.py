@@ -1396,7 +1396,7 @@ class MGMWeather:
 
     @staticmethod
     def _nominatim_il_ilce_adaylari(adres: dict[str, Any]) -> tuple[str | None, str | None]:
-"""
+        """
         Nominatim "address" objesinden il ve ilçe adaylarını çıkarır.
         
         Türkiye OSM verilerinde ilçe etiketleri standart olmadığından
@@ -1414,7 +1414,7 @@ class MGMWeather:
         return il_adayi, ilce_adayi
 
     def hava_durumu_konum(self, enlem: float, boylam: float) -> dict[str, Any]:
-         """
+        """
         Koordinatları Nominatim ile ters geocoding yaparak il/ilçe adına çevirir 
         ve MGM'de arar. MGM'de bulunamazsa (veya geocoding başarısız olursa) 
         Open-Meteo üzerinden anlık durumu döner (fallback).
