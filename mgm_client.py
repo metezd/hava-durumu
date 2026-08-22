@@ -1414,7 +1414,7 @@ class MGMWeather:
         return il_adayi, ilce_adayi
 
     def hava_durumu_konum(self, enlem: float, boylam: float) -> dict[str, Any]:
-"""
+         """
         Koordinatları Nominatim ile ters geocoding yaparak il/ilçe adına çevirir 
         ve MGM'de arar. MGM'de bulunamazsa (veya geocoding başarısız olursa) 
         Open-Meteo üzerinden anlık durumu döner (fallback).
