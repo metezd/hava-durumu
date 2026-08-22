@@ -1094,5 +1094,156 @@ class TestUyarilar(unittest.TestCase):
         self.assertEqual(sonuc["ham"], mgm_ham_ornek)  # birebir aynı, dönüşüm yok
 
 
+class _KonumSession:
+    """/konum için gereken tüm dış servisleri (Nominatim ters geocoding,
+    MGM merkezler/sondurumlar/tahminler, Open-Meteo current) tek bir
+    sahte oturumda birleştirir."""
+
+    def __init__(self, nominatim_adres=None, merkezler_davranisi=None, nominatim_hata=False):
+        self.nominatim_adres = nominatim_adres  # None -> adres bulunamadı
+        self.nominatim_hata = nominatim_hata  # True -> Nominatim'e bağlanılamadı
+        self.merkezler_davranisi = merkezler_davranisi or {}
+        self.calls: list[tuple] = []
+
+    def get(self, url, params=None, headers=None, **kwargs):
+        params = dict(params or {})
+        self.calls.append((url, params))
+        if "nominatim.openstreetmap.org" in url:
+            if self.nominatim_hata:
+                raise requests.ConnectionError("Nominatim'e ulaşılamadı (simülasyon)")
+            if self.nominatim_adres is None:
+                return _DummyResponse({})  # address alanı yok
+            return _DummyResponse({"address": self.nominatim_adres})
+        if "merkezler" in url:
+            anahtar = (params.get("il"), params.get("ilce"))
+            return _DummyResponse(self.merkezler_davranisi.get(anahtar, []))
+        if "sondurumlar" in url:
+            return _DummyResponse([{"sicaklik": 20.0, "hadiseKodu": "A", "veriZamani": "x"}])
+        if "tahminler/gunluk" in url:
+            return _DummyResponse([])
+        if "sunrise-sunset" in url:
+            return _DummyResponse(
+                {"results": {"sunrise": "2026-08-15T03:00:00+00:00", "sunset": "2026-08-15T16:00:00+00:00"}}
+            )
+        if "api.open-meteo.com" in url:
+            return _DummyResponse(_open_meteo_basarili_yuk())
+        raise AssertionError(f"Beklenmeyen URL: {url} params={params}")
+
+
+class TestKonumCozumleyici(unittest.TestCase):
+    """hava_durumu_konum()'un Nominatim -> MGM -> Open-Meteo zincirini
+    doğru sırayla denediğini doğrular."""
+
+    def test_nominatim_mgmde_bulunan_ilceyi_dogru_cozer(self):
+        session = _KonumSession(
+            nominatim_adres={"state": "İstanbul", "county": "Kadıköy"},
+            merkezler_davranisi={
+                ("istanbul", "kadikoy"): [
+                    {"il": "İstanbul", "ilce": "Kadıköy", "istasyonId": 93409,
+                     "enlem": 40.99, "boylam": 29.02}
+                ],
+            },
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.hava_durumu_konum(40.99, 29.02)
+        self.assertEqual(sonuc["durum"], "cozuldu")
+        self.assertEqual(sonuc["yontem"], "nominatim-mgm")
+        self.assertEqual(sonuc["il"], "İstanbul")
+        self.assertEqual(sonuc["ilce"], "Kadıköy")
+        self.assertEqual(sonuc["guncel"]["kaynak"], "mgm")
+
+    def test_ilce_alani_farkli_isimde_gelse_de_denenir(self):
+        # Nominatim bazı bölgelerde 'county' yerine 'town'/'suburb' gibi
+        # farklı alan adları kullanabiliyor — hepsi sırayla denenmeli.
+        session = _KonumSession(
+            nominatim_adres={"state": "İstanbul", "town": "Beşiktaş"},
+            merkezler_davranisi={
+                ("istanbul", "besiktas"): [
+                    {"il": "İstanbul", "ilce": "Beşiktaş", "istasyonId": 93410,
+                     "enlem": 41.04, "boylam": 29.01}
+                ],
+            },
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.hava_durumu_konum(41.04, 29.01)
+        self.assertEqual(sonuc["yontem"], "nominatim-mgm")
+        self.assertEqual(sonuc["ilce"], "Beşiktaş")
+
+    def test_mgmde_olmayan_ilce_dogrudan_open_meteoya_duser(self):
+        # Nominatim "Maslak" diyor ama MGM böyle bir ilçe tanımıyor.
+        session = _KonumSession(
+            nominatim_adres={"state": "İstanbul", "suburb": "Maslak"},
+            merkezler_davranisi={},  # MGM boş dönüyor
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.hava_durumu_konum(41.11, 29.02)
+        self.assertEqual(sonuc["durum"], "cozuldu")
+        self.assertEqual(sonuc["yontem"], "nominatim-open-meteo")
+        self.assertEqual(sonuc["guncel"]["kaynak"], "open-meteo")
+        self.assertEqual(sonuc["tahmin"], [])
+        self.assertEqual(sonuc["il"], "İstanbul")
+        self.assertEqual(sonuc["ilce"], "Maslak")
+
+    def test_nominatim_adres_bulamazsa_dogrudan_open_meteoya_duser(self):
+        session = _KonumSession(nominatim_adres=None)  # deniz ortası vb.
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.hava_durumu_konum(36.0, 30.0)
+        self.assertEqual(sonuc["yontem"], "open-meteo-dogrudan")
+        self.assertIsNone(sonuc["il"])
+        self.assertEqual(sonuc["guncel"]["kaynak"], "open-meteo")
+
+    def test_nominatim_cokerse_mgm_denenmeden_open_meteoya_duser(self):
+        session = _KonumSession(nominatim_hata=True)
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.hava_durumu_konum(41.0, 29.0)
+        self.assertEqual(sonuc["yontem"], "open-meteo-dogrudan")
+        # MGM'ye hiç merkezler isteği atılmamış olmalı
+        self.assertFalse(any("merkezler" in u for u, _ in session.calls))
+
+    def test_il_mgmnin_81_il_listesiyle_eslesmezse_open_meteoya_duser(self):
+        # Nominatim yurt dışı bir il adı dönerse (örn. sınır ötesi bir
+        # koordinat), 81 il listesiyle eşleşmez. Nominatim yine de bir
+        # adres bulduğu için yontem "nominatim-open-meteo" olur (Nominatim
+        # hiç adres bulamadığı "open-meteo-dogrudan" durumundan bilinçli
+        # olarak ayrı tutuluyor — hangisinin olduğu debug için faydalı).
+        session = _KonumSession(nominatim_adres={"state": "Attiki", "county": "Athens"})
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.hava_durumu_konum(37.98, 23.72)
+        self.assertEqual(sonuc["yontem"], "nominatim-open-meteo")
+        self.assertEqual(sonuc["guncel"]["kaynak"], "open-meteo")
+
+    def test_nominatim_user_agent_gonderilir(self):
+        session = _KonumSession(nominatim_adres=None)
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+        client._nominatim_ters_geocode(41.0, 29.0)
+        # get() çağrısına headers kwarg'ı olarak User-Agent geçirilmiş mi
+        # kontrol etmek için session.get'i sarmalayalım
+        orijinal_get = session.get
+        cagrilar = []
+
+        def sarmalayici(url, params=None, headers=None, **kwargs):
+            cagrilar.append(headers)
+            return orijinal_get(url, params=params, headers=headers, **kwargs)
+
+        session.get = sarmalayici
+        client2 = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client2.session = session
+        client2._nominatim_ters_geocode(42.0, 30.0)
+        self.assertTrue(any(h and "User-Agent" in h for h in cagrilar))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -70,6 +70,20 @@ class FakeMGM:
             raise MGMWeatherError("MGM'ye ulaşılamadı (simülasyon).")
         return {"ham": [], "not": "test notu"}
 
+    def hava_durumu_konum(self, enlem: float, boylam: float):
+        if enlem == 77.0:  # test tetikleyicisi, geçerli aralıkta (-90..90)
+            raise MGMWeatherError("Open-Meteo'ya da ulaşılamadı (simülasyon).")
+        return {
+            "durum": "cozuldu",
+            "yontem": "nominatim-mgm",
+            "il": "İstanbul",
+            "ilce": "Kadıköy",
+            "enlem": enlem,
+            "boylam": boylam,
+            "guncel": {"sicaklik": 25.0, "kaynak": "mgm"},
+            "tahmin": [],
+        }
+
 
 class TestAppIntegration(unittest.TestCase):
     def setUp(self):
@@ -196,6 +210,31 @@ class TestAppIntegration(unittest.TestCase):
 
     def test_uyarilar_mgm_hatasinda_502_doner(self):
         resp = self.client.get("/uyarilar?il=coken-il")
+        self.assertEqual(resp.status_code, 502)
+        self.assertFalse(resp.get_json()["basarili"])
+
+    def test_konum_basarili_istekte_200_doner(self):
+        resp = self.client.get("/konum?lat=40.99&lon=29.02")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data["basarili"])
+        self.assertEqual(data["veri"]["yontem"], "nominatim-mgm")
+
+    def test_konum_parametre_eksikse_400_doner(self):
+        self.assertEqual(self.client.get("/konum").status_code, 400)
+        self.assertEqual(self.client.get("/konum?lat=40.99").status_code, 400)
+        self.assertEqual(self.client.get("/konum?lon=29.02").status_code, 400)
+
+    def test_konum_gecersiz_sayida_400_doner(self):
+        resp = self.client.get("/konum?lat=abc&lon=29.02")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_konum_aralik_disinda_400_doner(self):
+        self.assertEqual(self.client.get("/konum?lat=999&lon=29.02").status_code, 400)
+        self.assertEqual(self.client.get("/konum?lat=40.99&lon=999").status_code, 400)
+
+    def test_konum_hata_verirse_502_doner(self):
+        resp = self.client.get("/konum?lat=77.0&lon=29.02")
         self.assertEqual(resp.status_code, 502)
         self.assertFalse(resp.get_json()["basarili"])
 

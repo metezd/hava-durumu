@@ -231,6 +231,32 @@ def uyarilar():
         return _hata_yanit(exc, 502)
 
 
+@app.get("/konum")
+def konum():
+    lat_str = request.args.get("lat")
+    lon_str = request.args.get("lon")
+    if not lat_str or not lon_str:
+        return jsonify(
+            {"basarili": False, "hata": "'lat' ve 'lon' parametreleri zorunludur."}
+        ), 400
+    try:
+        enlem = float(lat_str)
+        boylam = float(lon_str)
+    except ValueError:
+        return jsonify(
+            {"basarili": False, "hata": "'lat' ve 'lon' geçerli birer sayı olmalıdır."}
+        ), 400
+    if not (-90 <= enlem <= 90) or not (-180 <= boylam <= 180):
+        return jsonify(
+            {"basarili": False, "hata": "'lat' -90..90, 'lon' -180..180 aralığında olmalıdır."}
+        ), 400
+    try:
+        veri = mgm.hava_durumu_konum(enlem, boylam)
+        return jsonify({"basarili": True, "veri": veri})
+    except MGMWeatherError as exc:
+        return _hata_yanit(exc, 502)
+
+
 @app.get("/istasyonlar/<il>")
 def istasyonlar(il: str):
     try:

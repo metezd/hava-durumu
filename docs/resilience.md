@@ -1,239 +1,178 @@
-# Dayanıklılık (resilience) mimarisi ve yapılandırma
-
-MGM'nin sitesinin resmi bir garantisi yoktur. Servis zaman zaman yavaşlayabilir veya kesilebilir
-Bu proje, kullanıcıya bunu hissettirmemek için üç katman kullanıyor: cache,
+MGM'nin sitesinin resmi bir garantisi yoktur. Servis zaman zaman yavaşlayabilir veya kesilebilir. Bu proje, kullanıcıya bunu hissettirmemek için üç katman kullanıyor: cache,
 stale-while-revalidate ve circuit breaker. Bu belge üçünün nasıl
 çalıştığını ve ilgili tüm ortam değişkenlerini anlatır. Hızlı başlangıç ve
 endpoint listesi için [README](../README.md)'ye, Docker/test/CI detayları
 için [development.md](development.md)'ye bakınız.
 
-## Redis cache (opsiyonel)
+## Önbellek Altyapısı (In-Memory & Redis)
 
-Uygulama yanında opsiyonel bir Redis veya [Redis Stack](https://redis.io/docs/latest/operate/oss_and_stack/install/install-stack/)
-kullanabilirsiniz. Redis sunucusunu `docker run -d --rm -p 6379:6379 redis:7-alpine`
-ile çalıştırabilirsiniz.
+Sistem varsayılan olarak **In-Memory** önbellekleme ile çalışır. İsteğe bağlı olarak **Redis** veya [Redis Stack](https://redis.io/docs/latest/operate/oss_and_stack/install/install-stack/) kullanılabilir.
 
-`MGM_REDIS_URL` ortam değişkeni ayarlanırsa Redis birincil cache olur
-(in-memory cache'in önüne geçer):
+* **Bağımsız Çalıştırma:** Redis sunucusunu Docker üzerinden başlatmak için:
+  `docker run -d --rm -p 6379:6379 redis:7-alpine`
+* **Yapılandırma:** `MGM_REDIS_URL` ortam değişkeni tanımlandığında, Redis birincil önbellek katmanı olur ve in-memory katmanını devre dışı bırakır:
+  `MGM_REDIS_URL="redis://localhost:6379/0" python app.py`
+* **Hata Yönetimi:** Redis'e bağlanılamaması durumunda uygulama başlatılamaz ve hata fırlatır. Redis kullanılmayacaksa bu değişken tanımlanmamalıdır. (`docker compose up` komutu kullanıldığında Redis servisi ve URL değişkeni otomatik olarak yapılandırılır).
+* **Zaman Aşımı (Timeout):** Redis istemcisinde maksimum **2 saniyelik** socket ve bağlantı zaman aşımı uygulanır. Bu sayede olası Redis kesintileri veya yavaşlamaları ana istek akışını bloke etmez.
 
-```bash
-MGM_REDIS_URL="redis://localhost:6379/0" python app.py
-```
+## Stale-While-Revalidate ve Stampede Koruması
 
-Redis'e bağlanılamazsa uygulama hata verip durur. Redis olmadan kullanmak
-istiyorsanız değişkeni ayarlamayın ve bunun sonucunda in-memory cache ile çalışır.
-(`docker compose up` kullanıyorsanız bu adımlarla hiç uğraşmanıza gerek yok.
-Redis servisi ve `MGM_REDIS_URL` otomatik ayarlanır.)
+Eşzamanlı yüksek trafik altında sistem performansını korumak için önbellekteki verinin yaşam döngüsü iki aşamalı yönetilir:
 
-Redis cache'te socket timeout ve connect timeout (2 sn) zorunlu
-olarak uygulanır bu sayede Redis'in yavaşlaması veya çökmesi istek akışını
-uzun süre engellemez. Gün doğumu/batımı verisi de aynı cache altyapısından
-geçer.
+1. **Taze Dönem (`MGM_CACHE_TTL`):** Veri doğrudan önbellekten anında sunulur.
+2. **Bayat Dönem (`MGM_STALE_WHILE_REVALIDATE`):** TTL süresi dolduktan sonra gelen ilk istekte, kullanıcıya mevcut (bayat) veri bekletilmeden dönülür. Eşzamanlı olarak arka planda MGM'ye istek atılarak önbellek güncellenir. Kullanıcı MGM'nin olası yavaşlığından etkilenmez.
+3. **Süresi Dolmuş Dönem:** Her iki süre de dolduysa, istek MGM'ye engelleyici (blocking) olarak atılır ve taze veri beklenir.
 
-## Stale-while-revalidate ve cache stampede koruması
+**Cache Stampede Koruması:** Aynı anahtar için tazeleme gerektiğinde, sistem yalnızca tek bir isteğin arka planda yenileme yapmasına izin verir. SWR mekanizmasını devre dışı bırakmak için `MGM_STALE_WHILE_REVALIDATE=0` ayarlanmalıdır.
 
-Cache kayıtları iki aşamalı yaşlanır:
+## Circuit Breaker
 
-- **Taze dönem (`MGM_CACHE_TTL`):** kayıt doğrudan döner.
-- **Stale dönem (`MGM_STALE_WHILE_REVALIDATE`):** TTL dolduktan sonra
-  kullanıcıya eski veri anında döner, yeni veri arka planda getirilip
-  cache güncellenir. İstek MGM'nin yavaşlığından etkilenmez.
-- Stale dönemi de dolarsa istek engelleyici şekilde MGM'den taze veri çeker.
+MGM servisinin art arda hata döndürdüğü durumlarda sistemi korumak için Devre Kesici devreye girer.
 
-Aynı anahtar için eşzamanlı isteklerde yalnızca biri yenilemeyi yapar. SWR'yi
-kapatmak için `MGM_STALE_WHILE_REVALIDATE=0` verin.
+* **Durumlar:** Eşik değere ulaşıldığında devre **AÇIK** konuma geçer ve MGM'ye yeni istek atılmaz; doğrudan hata dönülür. Bekleme süresi dolduğunda devre **YARI AÇIK** duruma geçer ve tek bir test isteği atar. İstek başarılı olursa devre **KAPALI** (normal) duruma döner, başarısız olursa tekrar açılır.
+* **Önbellek Etkileşimi (Önemli):** Devre kesici **yalnızca ağ isteklerini engeller**, önbellek katmanının önüne geçmez. Devre açıkken önbellekte SWR kapsamında bayat veri varsa, bu veri istemciye sunulmaya devam eder. Arka plandaki gereksiz MGM istekleri kesilmiş olur. Önbellekte veri yoksa istek bekletilmeden reddedilir.
+* **İzleme:** Sistem durumu `GET /health` uç noktasındaki `circuit_breaker` alanından (`kapali` | `acik` | `yari-acik`) takip edilebilir.
 
-## Circuit breaker
+## Dinamik TTL Yapılandırması (`guncel_durum`, Deneysel)
 
-MGM art arda hata verdiğinde devre açılır: bunu izleyen süre boyunca MGM'ye hiç istek
-atılmaz, doğrudan hata döner. Süre dolunca devre **yarı açık** olur ve tek bir
-deneme isteği yapılır eğer başarılıysa devre kapanır, başarısızsa tekrar açılır
+MGM istasyon ölçümleri, gözlemsel olarak genellikle her saat başını birkaç dakika geçe (örn. 14:08, 15:07) güncellenmektedir. Bu döngüyü yakalamak için yalnızca `guncel_durum()` uç noktasında zamana duyarlı dinamik TTL uygulanır (İl listesi, tahmin ve geocoding verileri statik `MGM_CACHE_TTL` kullanmaya devam eder).
 
-Önemli: circuit breaker sadece **asıl ağ isteğini** keser, cache
-katmanının önüne geçmez. Yani MGM kesintisi sırasında elinizde stale veri 
-varsa kullanıcı bunu almaya devam eder, breaker sadece arka planda MGM'yi gereksiz yere zorlayan istekleri atlar. Cache'te hiç veri yoksa devre açıkken istek hatayla
-döner ve retry/backoff süresi boyunca beklemez.
+* **Sıcak Pencere (`MGM_GUNCEL_SICAK_TTL_SANIYE` - Varsayılan: 120):** Saat başlarındaki veri değişimlerini hızlıca yakalamak için TTL kısa tutulur.
+* **Soğuk Pencere (`MGM_GUNCEL_SOGUK_TTL_SANIYE` - Varsayılan: 1800):** MGM'nin veri yayınlamadığı saat ortalarında gereksiz ağ isteklerini ve revalidation işlemlerini azaltmak için TTL 30 dakikaya uzatılır. 
+* **Zaman Bazlı Hesaplama:** TTL, verinin yazıldığı an değil, okunduğu anki saate göre (`Europe/Istanbul` saat diliminde) hesaplanır. Yeni bir saate geçildiğinde kayıt otomatik olarak bayat kabul edilir ve revalidation tetiklenir. Bu işlem için standart Python kütüphanesi `zoneinfo` ve `tzdata` bağımlılığı kullanılır.
+* **Kapatma:** `MGM_CACHE_TTL=0` veya `MGM_GUNCEL_DINAMIK_TTL=0` ayarlanarak dinamik TTL devre dışı bırakılabilir; bu durumda statik TTL geçerli olur.
 
-Durum `GET /health` yanıtında `circuit_breaker`
-alanıyla görülebilir: `kapali` | `acik` | `yari-acik`
+## Yedek Veri Kaynağı (Open-Meteo Fallback)
 
-## Saat başına göre dinamik TTL (`guncel_durum`, deneysel)
+MGM API'sinde yaşanabilecek olası kesintilerde, sistemin tamamen hizmet dışı kalmasını önlemek amacıyla yedek olarak ücretsiz [Open-Meteo](https://open-meteo.com) servisi kullanılmaktadır.
 
-MGM'nin istasyon ölçümleri gözlemsel olarak genelde her saat başından
-birkaç dakika sonra (örn. 14:08, 15:07) sisteme düşüyor, bu MGM'nin 
-paylaştığı bir bilgi **DEĞİL** bu yüzden aşağıdaki varsayılanlar tahminidir
+### Kapsam ve Davranış
 
-Sadece `guncel_durum()` etkilenir — il listesi, tahmin, saatlik, geocoding gibi
-farklı güncelleme ritmine sahip veriler bundan etkilenmez, statik
-`MGM_CACHE_TTL`'de kalır
+* **Sadece Anlık Veri:** Yedek sistem yalnızca `GET /guncel` uç noktası ve anlık durum verileri için devreye girer. Saatlik veya 5 günlük tahminleri kapsamaz. 
+* **HTTP 200 Yanıtı:** Kesinti anında `GET /hava-durumu` uç noktası hata fırlatmaz ve başarılı yanıt (`200 OK`) dönmeye devam eder. Bu senaryoda anlık durum verisi (`guncel`) Open-Meteo'dan sağlanırken, tahmin verisi (`tahmin`) boş bir liste `[]` olarak döner.
 
-- **Sıcak pencere**: TTL kısa tutulur (`MGM_GUNCEL_SICAK_TTL_SANIYE`,`120`)
-  ki yeni düşen ölçüm hızlı yakalansın.
-- **Soğuk pencere**: TTL uzatılır
-  (`MGM_GUNCEL_SOGUK_TTL_SANIYE`, `1800` = 30 dk) — MGM'nin
-  bu aralıkta yeni veri yayınlamadığı varsayımıyla gereksiz
-  revalidation azaltılır. Not: tamamen durdurulmaz, sadece seyrekleşir
-  — varsayım yanlış çıkarsa veri en fazla 30 dk bayat kalır, sonsuza
-  kadar değil.
-- TTL, cache kaydının yazıldığı anda değil her okunduğu anda o
-  anki saate göre yeniden hesaplanır bu yüzden yeni bir saate
-  geçildiğinde eski kayıt otomatik "bayat" sayılır ve revalidation tetiklenir
-- `MGM_CACHE_TTL=0` ya da `MGM_GUNCEL_DINAMIK_TTL=0`
-  ile devre dışı bırakılabilir; devre dışıyken statik `MGM_CACHE_TTL`
-  kullanılır.
-- Saat dilimi hesaplaması Python'ın stdlib `zoneinfo`'suyla
-  (`Europe/Istanbul`) yapılır.`tzdata` paketi bu yüzden bağımlılıklara
-  eklendi
+### Veri Kaynağını Tespit Etme
 
-## Open-Meteo fallback (sadece anlık durum)
-
-Circuit breaker ve SWR, MGM'nin kısa süreli hatalarını büyük
-ölçüde yutar ama cache'te hiç veri olmayan bir anahtarda
-tam MGM kesintisi sırasında yine de elde bir şey kalmaz. 
-Bu durumda `GET /guncel` ve `GET /hava-durumu` uçları key
-gerektirmeyen ücretsiz bir servis olan [Open-Meteo](https://open-meteo.com)'ya
-düşer.
-
-Kapsam bilinçli olarak dar: sadece anlık durum için fallback var; 5
-günlük ve saatlik tahmin için yok. `/hava-durumu` MGM tamamen
-çökükken bile 200 dönmeye devam eder `tahmin` alanı bu durumda boş liste
-olur, `guncel` alanı Open-Meteo'dan gelir.
-
-Yanıtta hangi kaynaktan geldiği her zaman açık:
+API yanıtlarındaki `kaynak` alanı, verinin hangi servisten sağlandığını açıkça belirtir:
 
 ```json
-{ "kaynak": "mgm" }     // normal
-{ "kaynak": "open-meteo" }  // MGM'ye ulaşılamadı, yedek devrede
+{ "kaynak": "mgm" }         // Sistem normal çalışıyor
+{ "kaynak": "open-meteo" }  // MGM'ye ulaşılamadı, yedek sistem devrede
 ```
 
-`kaynak: "open-meteo"` iken `durumKodu`, MGM'nin değil Open-Meteo'nun WMO
-kod alanında ve ikisi doğrudan karşılaştırılamaz, `durum` alanına bakın
+## İl ve İlçe Sorgulama Davranışı
 
-Sınır: il/ilçe → istasyon çözümlemesi de MGM'den geliyor
-(`merkezler` uç noktası). MGM'nin istasyon listesi ile anlık durum ayrı
-cache girdileri kullandığından genelde biri çökükken diğeri hâlâ cache'te
-taze olur ama ikisi de aynı anda cache'siz düşerse enlem/boylam da elde olmayacağından bu fallback devreye giremez ve orijinal MGM hatası döner.
+MGM altyapısı gereği, il ve ilçe sorgularında belirli kısıtlamalar bulunmaktadır:
 
-## MGM'nin il/ilçe API kısıtı
+* **Sadece İl ile Sorgulama:** `GET /istasyonlar/<il>` gibi sadece il parametresi içeren istekler, o ilin tüm ilçelerini **listelemez**. Bunun yerine MGM'nin o il için belirlediği **varsayılan istasyonun** (örneğin İstanbul için sadece Bakırköy) verilerini döner.
+* **İlçe Sorgulama:** Belirli bir ilçenin verisine ulaşmak için ilçe adının açıkça (parametre olarak) belirtilmesi zorunludur. 
+* **İlçe Listeleme:** Sistemin "bir ildeki tüm ilçeleri listele" gibi bir uç noktası bulunmamaktadır, çünkü MGM tarafında toplu ilçe listesi sunan bir servis yoktur.
 
-MGM'nin `merkezler` uç noktası, yalnızca `il` verilip `ilce` verilmediğinde
-o ilin **tüm ilçelerini değil, genelde tek bir varsayılan
-istasyonu** döner. Denendi onaylandı: `il=istanbul` sadece Bakırköy döner,
-ama `il=istanbul&ilce=kadikoy` ayrı ve doğru bir sonuç döner. Yani MGM'nin bu uç noktası "bir ilin tüm ilçelerini listele" değil, "il + (bilinen) ilçe 
-adına göre istasyon bul" şeklinde çalışıyor
+---
 
-Bu yüzden `ilce_istasyonu(il, ilce)`, `ilce` verildiğinde onu doğrudan
-MGM'ye parametre olarak gönderir — `il_istasyonlari()`'nin döndürdüğü dar
-listede client-side arama yapmaz
+## Akıllı Arama (`/ara`)
 
-Sonuç olarak `GET /istasyonlar/<il>` (ilce'siz) bir ilin tüm ilçelerinin
-listesi değildir. Sadece MGM'nin o il için döndürdüğü varsayılan
-istasyondur. Geçerli bir ilçe adını zaten biliyorsanız `ilce` parametresiyle
-doğrudan sorgulayın; MGM'nin ilçe adlarını topluca listeleyen bilinen bir
-uç noktası yok, bu yüzden "bu ilde hangi ilçeler var" sorusunu bu API
-üzerinden yanıtlayamayız.
+`/ara?q=...` esnek metin girdilerini kabul eden üç aşamalı bir arama motoru kullanır
 
-## Akıllı arama (`/ara`) katmanlı çözümleme
+**Desteklenen Sorgu Tipleri:**
+1. **İl Adı:** Sadece il adı girildiğinde (ör. `q=ankara`) toleranslı arama yapılarak sonuç anında döndürülür.
+2. **İl/İlçe Formatı:** Sorgu içinde `/`, `,` veya boşluk kullanılarak lokasyon belirtilebilir (ör. `kadikoy/istanbul`). Sistem bu parçaları analiz edip doğru il ve ilçeyi eşleştirir.
+3. **Serbest Metin (Geocoding):** Doğrudan bir bölge veya semt adı girildiğinde (ör. `maslak` veya `maslak itü`), sistem Open-Meteo API'sini kullanarak lokasyonu tespit eder.
 
-`/ara?q=...` gerçek ML/embedding tabanlı bir "semantik arama" değil.
-Daha hafif, üç katmanlı bir çözümleyici (`akilli_yer_bul`):
+**Dönüş Davranışları:**
+* Bulunan lokasyonun MGM'de karşılığı varsa standart hava durumu verisi döner.
+* MGM'de karşılığı yoksa, o bölgenin anlık durumu Open-Meteo üzerinden sağlanır (`tahmin` listesi boş döner).
+* Eğer aranan kelime çok genel bir ifadeyse ve farklı illerde birden fazla karşılığı varsa, sistem hatalı tahmin yapmak yerine seçenekleri listeleyerek `durum: "belirsiz"` yanıtı döner.
 
-1. Tam eşleşme: sorgunun tamamı 81 il listesinden biriyle stdlib
-   `difflib` ile eşleşiyorsa anında çözülür, ağ isteği
-   yok.
-2. Parçalama: `/`, `,` ya da boşlukla ayrılmış girdilerde
-   (`"kadikoy/istanbul"`) bir parça bilinen bir ile yakınsa, kalan
-   parça(lar) ilçe adayı olarak doğrudan MGM'ye sorulur.
-3. Geocoding: ilk iki katman çözemezse, sorgu key gerektirmeyen Open-Meteo
-   API'sine gönderilir. Önce sorgunun **tamamı** tek bir yer adı olarak
-   denenir ardından canlıda görüldü ki bileşik girdiler (`"maslak itü"`) böyle
-   tek parça sorgulandığında sıfır sonuç dönebiliyorsa tam sorgu boş dönerse kelimeler tek tek denenir (`"maslak"` tek
-   başına bulunur), ilk sonuç veren kelime kullanılır. Dönen en iyi aday
-   önce MGM'de il+ilçe olarak denenir; MGM'de yoksa doğrudan o
-   koordinatla Open-Meteo'dan güncel durum döner, bu durumda `tahmin`
-   boş liste olur.
+## Konum Bazlı Arama (`/konum`)
 
-Geocoding, ilk birkaç sonuçta farklı illere yayılan adaylar bulursa tahmin
-yürütmek yerine `durum: "belirsiz"` ile bir seçenek listesi döner.
+Verilen enlem ve boylam koordinatları üzerinden hava durumu bilgisini getirir. MGM doğrudan koordinat tabanlı arama desteklemediği için sistem arka planda ters coğrafi kodlama (reverse geocoding) kullanır.
 
-## Meteorolojik uyarılar (`/uyarilar`) - deneysel
+### Çalışma Mantığı
 
-Bu projede daha önce tam da bu tür bir "görmediğimiz veriyi tahmin ederek
-dönüştürme" hatası yaşandı `ilce_istasyonu`'nun eski client-side
-filtreleme mantığı, MGM'de gerçekten var olan ilçeleri
-yanlışlıkla "bulunamadı" gösteriyordu. Aynı hatayı burada tekrarlamamak
-için `uyarilar()` **hiçbir alan adını tahmin etmiyor**
+1. Girilen koordinatlar [Nominatim](https://nominatim.org) kullanılarak il ve ilçe bilgisine dönüştürülür.
+2. Tespit edilen il/ilçe verisiyle MGM üzerinden hava durumu sorgulanır ve detaylı veri döner
+3. **Yedek Sistem:** Eğer verilen koordinatlar Türkiye sınırları dışında veya deniz üzerindeyse veya MGM'de karşılığı bulunmayan bir lokasyonsa, anlık hava durumu verisi otomatik olarak **Open-Meteo** servisinden sağlanır
 
-MGM'nin resmi MeteoUYARI sistemi (bkz. mgm.gov.tr/meteouyari) şu
-kavramsal şemayı kullanıyor ama bunların MGM'nin JSON yanıtındaki
-gerçek alan adları henüz doğrulanmadı:
+> **Rate Limiting hakkında:**
+> Bu uç nokta, arka planda ücretsiz Nominatim sunucularını kullandığı için saniyede 1 istek limitiyle çalışır. Projenin yerleşik Cache ve SWR yapısı tekrarlayan istekleri önleyerek bu limiti korur. Yüksek trafikli bir ortama dağıtım yapacaksanız kendi Nominatim sunucunuzu kurmanız veya alternatif bir servis kullanmanız önerilir
 
-- **Şiddet:** Yeşil (tehlike yok) → Sarı (az tehlikeli) → Turuncu
-  (tehlikeli) → Kırmızı (çok tehlikeli)
-- **Hadise tipi:** Soğuk, Sıcak, Sis, Zirai Don, Buzlanma ve Don, Toz
-  Taşınımı, Kar Erimesi, Çığ, Kar, Gökgürültülü Sağanak Yağış, Rüzgar,
-  Yağmur
-- **Kapsam:** Bugün + Yarın, il/ilçe bazlı.
+## Meteorolojik Uyarılar (`/uyarilar`) - Deneysel
 
-`il` query parametresi MGM'ye doğrudan iletilir ama filtrenin MGM
-tarafında gerçekten çalışıp çalışmadığı doğrulanamadı (aktif uyarı
-olmadan test edilemedi) — zararsız bir passthrough, MGM parametreyi yok
-sayarsa en kötü ihtimalle filtresiz sonuçla aynı şeyi alırsınız.
+Sistem, doğrulanmamış veri yapıları üzerinde hatalı dönüşümler (mapping) yapmamak adına, MGM'den dönen uyarı verilerini hiçbir alan adını değiştirmeden doğrudan istemciye iletir (passthrough). 
 
-## Tüm ortam değişkenleri
+MGM'nin resmi MeteoUYARI sistemine (mgm.gov.tr/meteouyari) göre beklenen kavramsal şema şu şekildedir:
 
-**MGM istemcisi (timeout / retry):**
+* **Şiddet (Renk Kodları):** Yeşil (Tehlike Yok) → Sarı (Potansiyel Tehlike) → Turuncu (Tehlikeli) → Kırmızı (Çok Tehlikeli)
+* **Hadise Tipi:** Soğuk, Sıcak, Sis, Zirai Don, Buzlanma ve Don, Toz Taşınımı, Kar Erimesi, Çığ, Kar, Gökgürültülü Sağanak Yağış, Rüzgar, Yağmur
+* **Kapsam:** Bugün ve Yarın (İl/İlçe bazlı)
 
-| Değişken | Varsayılan |
+> **Not:** Geliştirme sürecinde aktif bir meteorolojik uyarı bulunmadığından, MGM'nin JSON yanıtındaki kesin alan (field) isimleri henüz tam olarak doğrulanmamış ve haritalanmamıştır. Bu nedenle veri olduğu gibi aktarılır.
+
+### İl Bazlı Filtreleme Davranışı
+
+Sorgu içinde gönderilen `il` parametresi MGM sunucularına doğrudan iletilir. Ancak aktif uyarı eksikliği nedeniyle MGM'nin uç noktasında bu filtrelemenin çalışıp çalışmadığı henüz doğrulanamamıştır. MGM'nin bu parametreyi yoksayması senaryosunda sistem hata fırlatmaz. En kötü senaryoda herhangi bir filtre uygulanmamış tam uyarı listesini döndürür.
+
+## Environment Variables
+
+Sistemin ağ istekleri, önbellek stratejileri, güvenlik politikaları ve sunucu ayarları ortam değişkenleri üzerinden yapılandırılmaktadır. Tüm değişkenlerin varsayılan değerleriyle birlikte listelendiği örnek bir şablon için [`.env.example`](../.env.example) dosyasına göz atınız.
+
+### 1. MGM İstemcisi (Timeout ve Retry)
+
+MGM uç noktalarına yapılan isteklerin zaman aşımı ve hata durumundaki yeniden deneme davranışlarını kontrol eder.
+
+| Değişken | Varsayılan Değer |
 |---|---|
 | `MGM_TIMEOUT` | `10` |
 | `MGM_RETRY_TOTAL` | `3` |
 | `MGM_RETRY_BACKOFF` | `0.3` |
 
-**Cache / SWR:**
+### 2. Önbellek ve SWR Katmanı
 
-| Değişken | Varsayılan |
+In-memory veya Redis önbellek altyapısının TTL sürelerini ve kapasite sınırlarını belirler
+
+| Değişken | Varsayılan Değer |
 |---|---|
 | `MGM_CACHE_TTL` | `60` |
 | `MGM_STALE_WHILE_REVALIDATE` | `300` |
 | `MGM_CACHE_MAX_ENTRIES` | `512` |
-| `MGM_REDIS_URL` | yok (Redis kapalı) |
+| `MGM_REDIS_URL` | *(Tanımsız - Redis Kapalı)* |
 | `MGM_REDIS_PREFIX` | `mgm-cache` |
 
-**Circuit breaker:**
+### 3. Circuit Breaker
 
-| Değişken | Varsayılan |
+Hata oranları yükseldiğinde MGM sunucularına giden yükü kesmek için kullanılan eşik ve bekleme değerlerini içerir.
+
+| Değişken | Varsayılan Değer |
 |---|---|
 | `MGM_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | `5` |
 | `MGM_CIRCUIT_BREAKER_WINDOW_SECONDS` | `30` |
 | `MGM_CIRCUIT_BREAKER_OPEN_SECONDS` | `60` |
 
-**CORS ve güvenlik:**
+### 4. CORS ve Güvenlik
 
-| Değişken | Varsayılan |
+| Değişken | Varsayılan Değer |
 |---|---|
 | `APP_CORS_ALLOW_ORIGIN` | `*` |
 
-Yanıtlarda otomatik güvenlik header'ları döner (`X-Content-Type-Options`,
-`X-Frame-Options`, `Referrer-Policy`, `Content-Security-Policy`)
+> **Headers:** Sunucu, tüm API yanıtlarına otomatik olarak `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` ve `Content-Security-Policy` güvenlik başlıklarını ekler.
 
-**Rate limiting:**
+### 5. Rate Limit
 
-| Değişken | Varsayılan |
+| Değişken | Varsayılan Değer |
 |---|---|
 | `APP_RATE_LIMIT_WINDOW_SECONDS` | `60` |
 | `APP_RATE_LIMIT_MAX_REQUESTS` | `60` |
 
-Aynı IP'den pencere içinde limitten fazla istek gelirse `429 Too Many
-Requests` döner (`/health`, `/docs`, `/openapi.yaml` bu limitten muaf)
+> **Limit Aşımı:** Aynı IP adresi üzerinden belirlenen zaman penceresi içinde (window) maksimum limit aşıldığında sistem `429 Too Many Requests` hatası döndürür. (Not: `/health`, `/docs` ve `/openapi.yaml` uç noktaları bu sınırlamadan muaftır).
 
-**Sunucu:**
+### 6. Sunucu Yapılandırması
 
-| Değişken | Varsayılan |
+Uygulamanın ağ üzerinde nasıl ayağa kalkacağını ve hangi sunucu motorunu kullanacağını belirler.
+
+| Değişken | Varsayılan Değer |
 |---|---|
-| `APP_HOST` | `0.0.0.0` (Docker) / `127.0.0.1` (yerel) |
+| `APP_HOST` | `0.0.0.0` (Docker) / `127.0.0.1` (Yerel) |
 | `APP_PORT` | `5000` |
 | `APP_SERVER` | `waitress` |
-| `FLASK_DEBUG` | yalnızca `APP_SERVER=flask` iken etkili |
-
-Tüm değişkenler için varsayılanlarıyla birlikte örnek bir dosya: [`.env.example`](../.env.example)
+| `FLASK_DEBUG` | *(Sadece `APP_SERVER=flask` iken aktiftir)* |

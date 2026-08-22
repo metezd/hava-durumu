@@ -147,6 +147,53 @@ paths:
               schema:
                 $ref: "#/components/schemas/HataYaniti"
 
+  /konum:
+    get:
+      tags: [hava-durumu]
+      summary: GPS koordinatından hava durumu
+      description: >
+        Enlem ve boylamı OpenStreetMap'in ücretsiz Nominatim servisiyle
+        bir il/ilçe adayına çevirir. MGM'de karşılığı yoksa
+        doğrudan verilen koordinatla Open-Meteo'dan güncel durum döner
+      parameters:
+        - name: lat
+          in: query
+          required: true
+          description: Enlem, -90 ile 90 arası
+          schema:
+            type: number
+            example: 40.99
+        - name: lon
+          in: query
+          required: true
+          description: Boylam, -180 ile 180 arası
+          schema:
+            type: number
+            example: 29.02
+      responses:
+        "200":
+          description: Çözüldü
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    $ref: "#/components/schemas/KonumCozuldu"
+        "400":
+          description: "'lat'/'lon' eksik, sayı değil ya da aralık dışı"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HataYaniti"
+        "502":
+          description: Hem MGM hem Open-Meteo'ya ulaşılamadı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HataYaniti"
+
   /istasyonlar/{il}:
     get:
       tags: [iller]
@@ -419,6 +466,28 @@ components:
                 karşılığı yok (ör. resmi ilçe olmayan bir mahalle),
                 `guncel` doğrudan Open-Meteo'dan; `tahmin` boş liste.
               example: geocoding-dogrudan
+
+    KonumCozuldu:
+      allOf:
+        - $ref: "#/components/schemas/HavaDurumuOzeti"
+        - type: object
+          properties:
+            durum: { type: string, enum: [cozuldu], example: cozuldu }
+            yontem:
+              type: string
+              enum:
+                [
+                  nominatim-mgm,
+                  nominatim-mgm-il-varsayilan,
+                  nominatim-open-meteo,
+                  open-meteo-dogrudan,
+                ]
+              description: >
+                nominatim-mgm/nominatim-mgm-il-varsayilan: Nominatim ile
+                bulunan il(+ilçe) MGM'de de doğrulandı. 
+                nominatim-open-meteo: Nominatim bir adres buldu ama MGM'de karşılığı yoktu.
+                open-meteo-dogrudan: Nominatim hiç adres bulamadı ya da servise ulaşılamadı.
+              example: nominatim-mgm
 
     AramaBelirsiz:
       type: object

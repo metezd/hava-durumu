@@ -359,6 +359,8 @@ class MGMWeather:
     SUNRISE_URL = "https://api.sunrise-sunset.org/json"
     OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
     OPEN_METEO_GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
+    NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
+    NOMINATIM_USER_AGENT = "mgm-hava-durumu-api/1.0 (https://github.com/metezd/hava-durumu)"
 
     HEADERS = {
         "Host": "servis.mgm.gov.tr",
@@ -1353,6 +1355,102 @@ class MGMWeather:
         veri["sorgu"] = sorgu
         veri["yontem"] = sonuc["yontem"]
         return veri
+
+    def _nominatim_ters_geocode(self, enlem: float, boylam: float) -> dict[str, Any] | None:
+        """
+        Koordinatı bir adres bileşenine çözer: OpenStreetMap'in
+        ücretsiz Nominatim servisi. Kullanım politikası
+        saniyede 1 istekle sınırlı ve tanımlayıcı bir User-Agent zorunlu
+        kılıyor. Bu proje ölçeğinde sorun değil; yüksek trafikli bir deploy'da kendi Nominatim
+        instance'ınızı barındırmanız ya da ücretli bir alternatif kullanmanız gerekir.
+
+        Adres bulunamazsa None döner
+        """
+        params = {
+            "lat": enlem,
+            "lon": boylam,
+            "format": "jsonv2",
+            "addressdetails": 1,
+            "accept-language": "tr",
+            "zoom": 10,  # il/ilçe seviyesi yeterli
+        }
+        cache_key = self._cache_key("nominatim-reverse", params)
+
+        def loader() -> dict[str, Any] | None:
+            try:
+                resp = self.session.get(
+                    self.NOMINATIM_REVERSE_URL,
+                    params=params,
+                    headers={"User-Agent": self.NOMINATIM_USER_AGENT},
+                    timeout=self.timeout,
+                )
+                resp.raise_for_status()
+                veri = resp.json()
+            except (requests.RequestException, ValueError) as exc:
+                raise MGMWeatherError(
+                    f"Nominatim ters geocoding servisinden veri alınamadı: {exc}"
+                ) from exc
+            return veri.get("address")
+
+        return self._cached_get(cache_key, loader)
+
+    @staticmethod
+    def _nominatim_il_ilce_adaylari(adres: dict[str, Any]) -> tuple[str | None, str | None]:
+"""
+        Nominatim "address" objesinden il ve ilçe adaylarını çıkarır.
+        
+        Türkiye OSM verilerinde ilçe etiketleri standart olmadığından
+        (county, city_district, town, suburb veya district olabilmektedir)
+        sistem sırayla tarama yapar ve ilk dolu değeri kullanır.
+        Tek bir alan adına bağımlı kalınarak yaşanabilecek veri kayıpları engellenir.
+        """
+        il_adayi = adres.get("state")
+        ilce_adayi = None
+        for anahtar in ("county", "city_district", "town", "suburb", "district", "city"):
+            deger = adres.get(anahtar)
+            if deger:
+                ilce_adayi = deger
+                break
+        return il_adayi, ilce_adayi
+
+    def hava_durumu_konum(self, enlem: float, boylam: float) -> dict[str, Any]:
+"""
+        Koordinatları Nominatim ile ters geocoding yaparak il/ilçe adına çevirir 
+        ve MGM'de arar. MGM'de bulunamazsa (veya geocoding başarısız olursa) 
+        Open-Meteo üzerinden anlık durumu döner (fallback).
+        """
+        il_adayi: str | None = None
+        ilce_adayi: str | None = None
+        try:
+            adres = self._nominatim_ters_geocode(enlem, boylam)
+            if adres:
+                il_adayi, ilce_adayi = self._nominatim_il_ilce_adaylari(adres)
+        except MGMWeatherError:
+            pass  # ters geocoding çökerse MGM denemeden Open-Meteo'ya düş
+
+        if il_adayi:
+            il = self._il_yakin_eslesme(il_adayi)
+            if il:
+                try:
+                    veri = self.hava_durumu(il, ilce_adayi)
+                    veri["durum"] = "cozuldu"
+                    veri["yontem"] = "nominatim-mgm" if ilce_adayi else "nominatim-mgm-il-varsayilan"
+                    return veri
+                except MGMWeatherError:
+                    pass
+
+        guncel = self._open_meteo_guncel_durum(enlem, boylam)
+        guncel["kaynak"] = "open-meteo"
+        return {
+            "durum": "cozuldu",
+            "yontem": "nominatim-open-meteo" if il_adayi else "open-meteo-dogrudan",
+            "il": il_adayi,
+            "ilce": ilce_adayi,
+            "enlem": enlem,
+            "boylam": boylam,
+            "guncel": guncel,
+            "tahmin": [],
+        }
 
 
 if __name__ == "__main__":

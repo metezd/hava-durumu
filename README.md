@@ -44,8 +44,11 @@ Tüm endpoint'ler, parametreler ve şema: **`/docs`** (Swagger UI)
 Yazım hatası/karmaşık girdi toleranslı arama için `/ara?q=...` de var —
 `"kadikoy/istanbul"`, `"maslak itü"` gibi serbest metinleri çözer.
 
-`/uyarilar?il=...` (deneysel) MGM'nin meteorolojik uyarı
-verisini ham geçirir.
+`/uyarilar?il=...` MGM'nin meteorolojik uyarı
+verisini geçirir.
+
+`/konum?lat=...&lon=...` GPS koordinatından önce MGM'yi
+dener, çalışmazsa Open-Meteo denenir
 
 Türkçe karakter problemi olursa Türkçe karakter kullanmayın. Örn: (`Istanbul`, `Bakirkoy`)
 
