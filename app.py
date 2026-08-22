@@ -32,7 +32,7 @@ import os
 import time
 from collections import defaultdict, deque
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, g, jsonify, request
 from flask_compress import Compress
 
 from mgm_client import MGMWeather, MGMWeatherError, turkiye_illeri
@@ -126,9 +126,19 @@ def rate_limit():
     now = time.monotonic()
     bucket = RATE_LIMIT_BUCKETS[ip]
     window_seconds = max(1, RATE_LIMIT_WINDOW)
+    limit = max(1, RATE_LIMIT_MAX)
     while bucket and now - bucket[0] > window_seconds:
         bucket.popleft()
-    if len(bucket) >= max(1, RATE_LIMIT_MAX):
+
+    if bucket:
+        kalan_sure = max(0.0, window_seconds - (now - bucket[0]))
+    else:
+        kalan_sure = 0.0
+    g.rl_limit = limit
+    g.rl_reset_epoch = int(time.time() + kalan_sure)
+
+    if len(bucket) >= limit:
+        g.rl_remaining = 0
         retry_after = max(1, window_seconds)
         response = jsonify({
             "basarili": False,
@@ -138,6 +148,7 @@ def rate_limit():
         response.headers["Retry-After"] = str(retry_after)
         return response
     bucket.append(now)
+    g.rl_remaining = max(0, limit - len(bucket))
 
 
 @app.after_request
@@ -150,6 +161,11 @@ def guvenlik_ve_cors_headerlari(response):
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none';"
+
+    if hasattr(g, "rl_limit"):
+        response.headers["X-RateLimit-Limit"] = str(g.rl_limit)
+        response.headers["X-RateLimit-Remaining"] = str(g.rl_remaining)
+        response.headers["X-RateLimit-Reset"] = str(g.rl_reset_epoch)
     return response
 
 

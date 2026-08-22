@@ -44,6 +44,11 @@ yorumda yazıyor.
 Dependabot (`.github/dependabot.yml`) pip/Docker/GitHub Actions
 bağımlılıklarını haftalık tarar, güncelleme PR'ı açar.
 
+## Rate limiting
+
+`APP_RATE_LIMIT_WINDOW_SECONDS`/`APP_RATE_LIMIT_MAX_REQUESTS` IP başına sliding-window limiti uygular. Her yanıt `X-RateLimit-Limit`, `X-RateLimit-Remaining`,
+`X-RateLimit-Reset` header'larını taşır. Sliding window olduğu için tek bir sabit reset anı yoktur `Reset`, en eski isteğin pencereden düşüp en az bir hakkın daha geri geleceği zamanı gösterir. `/health`, `/docs`, `/openapi.yaml` limitten muaf
+
 ## Response sıkıştırma
 
 JSON/HTML/YAML yanıtları `Accept-Encoding: gzip` gönderen istemcilere

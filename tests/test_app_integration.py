@@ -1,3 +1,4 @@
+import time
 import unittest
 
 import app as app_module
@@ -225,6 +226,48 @@ class TestAppIntegration(unittest.TestCase):
                 self.assertEqual(self.client.get("/openapi.yaml").status_code, 200)
         finally:
             app_module.RATE_LIMIT_MAX = 60
+
+    def test_docs_muaf_yollarda_ratelimit_headerlari_yok(self):
+        resp = self.client.get("/docs")
+        self.assertNotIn("X-RateLimit-Limit", resp.headers)
+        self.assertNotIn("X-RateLimit-Remaining", resp.headers)
+        self.assertNotIn("X-RateLimit-Reset", resp.headers)
+
+    def test_ratelimit_headerlari_basarili_yanitta_dogru_hesaplanir(self):
+        app_module.RATE_LIMIT_MAX = 5
+        app_module.RATE_LIMIT_WINDOW = 60
+        app_module.RATE_LIMIT_BUCKETS.clear()
+        try:
+            resp1 = self.client.get("/iller")
+            self.assertEqual(resp1.headers["X-RateLimit-Limit"], "5")
+            self.assertEqual(resp1.headers["X-RateLimit-Remaining"], "4")
+
+            resp2 = self.client.get("/iller")
+            self.assertEqual(resp2.headers["X-RateLimit-Remaining"], "3")
+
+            # reset epoch şimdiki zamandan ileride olmalı
+            simdi = int(time.time())
+            reset = int(resp2.headers["X-RateLimit-Reset"])
+            self.assertGreater(reset, simdi)
+            self.assertLessEqual(reset, simdi + 61)
+        finally:
+            app_module.RATE_LIMIT_MAX = 60
+            app_module.RATE_LIMIT_WINDOW = 60
+            app_module.RATE_LIMIT_BUCKETS.clear()
+
+    def test_ratelimit_headerlari_429_yanitinda_da_var_ve_remaining_sifir(self):
+        app_module.RATE_LIMIT_MAX = 1
+        app_module.RATE_LIMIT_BUCKETS.clear()
+        try:
+            self.assertEqual(self.client.get("/iller").status_code, 200)
+            resp = self.client.get("/iller")
+            self.assertEqual(resp.status_code, 429)
+            self.assertEqual(resp.headers["X-RateLimit-Remaining"], "0")
+            self.assertEqual(resp.headers["X-RateLimit-Limit"], "1")
+            self.assertIn("Retry-After", resp.headers)
+        finally:
+            app_module.RATE_LIMIT_MAX = 60
+            app_module.RATE_LIMIT_BUCKETS.clear()
 
     def test_iller_gzip_ile_istenince_sikistirilmis_doner(self):
         import gzip
